@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Coalesce.Http.Tests/Coalesce.Http.Tests.csproj" />
+  <Project Path="Coalesce.Http/Coalesce.Http.csproj" />
+</Solution>

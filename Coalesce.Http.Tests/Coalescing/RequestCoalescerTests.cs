@@ -1,0 +1,281 @@
+using Coalesce.Http.Coalesce.Http.Coalescing;
+using FluentAssertions;
+
+namespace Coalesce.Http.Tests.Coalescing;
+
+public class RequestCoalescerTests
+{
+    [Fact]
+    public async Task ExecuteAsync_ShouldExecuteFactoryOnce()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var executionCount = 0;
+
+        Task<HttpResponseMessage> Factory()
+        {
+            executionCount++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        }
+
+        // Act
+        var response = await coalescer.ExecuteAsync(key, Factory);
+
+        // Assert
+        executionCount.Should().Be(1);
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithMultipleConcurrentCalls_ShouldExecuteFactoryOnce()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var executionCount = 0;
+        var tcs = new TaskCompletionSource<HttpResponseMessage>();
+
+        Task<HttpResponseMessage> Factory()
+        {
+            Interlocked.Increment(ref executionCount);
+            return tcs.Task;
+        }
+
+        // Act
+        var task1 = coalescer.ExecuteAsync(key, Factory);
+        var task2 = coalescer.ExecuteAsync(key, Factory);
+        var task3 = coalescer.ExecuteAsync(key, Factory);
+
+        tcs.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+
+        var response1 = await task1;
+        var response2 = await task2;
+        var response3 = await task3;
+
+        // Assert
+        executionCount.Should().Be(1);
+        response1.Should().BeSameAs(response2);
+        response2.Should().BeSameAs(response3);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithDifferentKeys_ShouldExecuteFactoryMultipleTimes()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key1 = new RequestKey("GET", "https://api.example.com/data1");
+        var key2 = new RequestKey("GET", "https://api.example.com/data2");
+        var executionCount = 0;
+
+        Task<HttpResponseMessage> Factory()
+        {
+            executionCount++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        }
+
+        // Act
+        var response1 = await coalescer.ExecuteAsync(key1, Factory);
+        var response2 = await coalescer.ExecuteAsync(key2, Factory);
+
+        // Assert
+        executionCount.Should().Be(2);
+        response1.Should().NotBeSameAs(response2);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ShouldCleanupAfterCompletion()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var executionCount = 0;
+
+        Task<HttpResponseMessage> Factory()
+        {
+            executionCount++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        }
+
+        // Act
+        await coalescer.ExecuteAsync(key, Factory);
+        await coalescer.ExecuteAsync(key, Factory);
+
+        // Assert
+        executionCount.Should().Be(2, "el request key debería limpiarse después de la primera ejecución");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenFactoryThrows_ShouldPropagateException()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var expectedException = new InvalidOperationException("Test exception");
+
+        Task<HttpResponseMessage> Factory()
+        {
+            throw expectedException;
+        }
+
+        // Act
+        Func<Task> act = async () => await coalescer.ExecuteAsync(key, Factory);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("Test exception");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenFactoryThrows_MultipleConcurrentCalls_ShouldPropagateExceptionToAll()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var tcs = new TaskCompletionSource<HttpResponseMessage>();
+        var executionCount = 0;
+
+        Task<HttpResponseMessage> Factory()
+        {
+            Interlocked.Increment(ref executionCount);
+            return tcs.Task;
+        }
+
+        // Act
+        var task1 = coalescer.ExecuteAsync(key, Factory);
+        var task2 = coalescer.ExecuteAsync(key, Factory);
+        var task3 = coalescer.ExecuteAsync(key, Factory);
+
+        tcs.SetException(new InvalidOperationException("Test exception"));
+
+        // Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await task1);
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await task2);
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await task3);
+        executionCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AfterException_ShouldCleanupAndAllowRetry()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var executionCount = 0;
+
+        Task<HttpResponseMessage> FailingFactory()
+        {
+            executionCount++;
+            throw new InvalidOperationException("Test exception");
+        }
+
+        Task<HttpResponseMessage> SuccessFactory()
+        {
+            executionCount++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        }
+
+        // Act
+        try
+        {
+            await coalescer.ExecuteAsync(key, FailingFactory);
+        }
+        catch
+        {
+            // Expected
+        }
+
+        var response = await coalescer.ExecuteAsync(key, SuccessFactory);
+
+        // Assert
+        executionCount.Should().Be(2);
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithDifferentMethods_ShouldExecuteSeparately()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var getKey = new RequestKey("GET", "https://api.example.com/data");
+        var postKey = new RequestKey("POST", "https://api.example.com/data");
+        var executionCount = 0;
+
+        Task<HttpResponseMessage> Factory()
+        {
+            executionCount++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        }
+
+        // Act
+        var response1 = await coalescer.ExecuteAsync(getKey, Factory);
+        var response2 = await coalescer.ExecuteAsync(postKey, Factory);
+
+        // Assert
+        executionCount.Should().Be(2);
+        response1.Should().NotBeSameAs(response2);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_HighConcurrency_ShouldHandleCorrectly()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var executionCount = 0;
+        var tcs = new TaskCompletionSource<HttpResponseMessage>();
+
+        Task<HttpResponseMessage> Factory()
+        {
+            Interlocked.Increment(ref executionCount);
+            return tcs.Task;
+        }
+
+        // Act
+        const int concurrentCalls = 100;
+        var tasks = new List<Task<HttpResponseMessage>>();
+
+        for (int i = 0; i < concurrentCalls; i++)
+        {
+            tasks.Add(coalescer.ExecuteAsync(key, Factory));
+        }
+
+        tcs.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+
+        var responses = await Task.WhenAll(tasks);
+
+        // Assert
+        executionCount.Should().Be(1);
+        responses.Should().HaveCount(concurrentCalls);
+        responses.Should().OnlyContain(r => r == responses[0]);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithCancellation_ShouldNotAffectOtherCalls()
+    {
+        // Arrange
+        var coalescer = new RequestCoalescer();
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var tcs = new TaskCompletionSource<HttpResponseMessage>();
+
+        Task<HttpResponseMessage> Factory()
+        {
+            return tcs.Task;
+        }
+
+        // Act
+        var cts = new CancellationTokenSource();
+        var task1 = coalescer.ExecuteAsync(key, Factory);
+        var task2 = coalescer.ExecuteAsync(key, Factory);
+
+        cts.Cancel();
+        tcs.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+
+        var response1 = await task1;
+        var response2 = await task2;
+
+        // Assert
+        response1.Should().BeSameAs(response2);
+        response1.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+    }
+}
