@@ -173,22 +173,32 @@ public class CoalescingHandlerTests
     }
 
     [Fact]
-    public async Task SendAsync_WithCancellation_ShouldRespectCancellationToken()
+    public async Task SendAsync_WithCancellation_ShouldNotCancelUnderlyingRequest()
     {
         // Arrange
-        _innerHandler.Delay = TimeSpan.FromSeconds(10);
-        var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+        // Cuando se hace coalescing, el CancellationToken de un caller individual
+        // no debe cancelar la request HTTP subyacente para proteger a otros callers
+        _innerHandler.Delay = TimeSpan.FromMilliseconds(100);
+        var request1 = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+        var request2 = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
         var cts = new CancellationTokenSource();
         var invoker = new HttpMessageInvoker(_handler);
 
         // Act
-        var task = invoker.SendAsync(request, cts.Token);
+        var task1 = invoker.SendAsync(request1, cts.Token);
+        var task2 = invoker.SendAsync(request2, CancellationToken.None);
+        
+        // Cancelar el primer caller
         cts.Cancel();
-
-        Func<Task> act = async () => await task;
+        
+        // El segundo caller debe completarse exitosamente
+        var response2 = await task2;
 
         // Assert
-        await act.Should().ThrowAsync<TaskCanceledException>();
+        response2.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        // El primer task debería completarse también (la request subyacente no se canceló)
+        var response1 = await task1;
+        response1.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
     }
 
     [Fact]

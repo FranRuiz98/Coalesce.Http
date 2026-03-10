@@ -55,8 +55,13 @@ public class RequestCoalescerTests
 
         // Assert
         executionCount.Should().Be(1);
-        response1.Should().BeSameAs(response2);
-        response2.Should().BeSameAs(response3);
+        // Las respuestas son clones independientes, no la misma instancia
+        response1.Should().NotBeSameAs(response2);
+        response2.Should().NotBeSameAs(response3);
+        // Pero todas deben tener el mismo status code
+        response1.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        response2.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        response3.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
     }
 
     [Fact]
@@ -247,7 +252,8 @@ public class RequestCoalescerTests
         // Assert
         executionCount.Should().Be(1);
         responses.Should().HaveCount(concurrentCalls);
-        responses.Should().OnlyContain(r => r == responses[0]);
+        // Todas las respuestas deben tener el mismo status code (aunque son clones independientes)
+        responses.Should().OnlyContain(r => r.StatusCode == System.Net.HttpStatusCode.OK);
     }
 
     [Fact]
@@ -275,7 +281,9 @@ public class RequestCoalescerTests
         var response2 = await task2;
 
         // Assert
-        response1.Should().BeSameAs(response2);
+        // Las respuestas son clones independientes
+        response1.Should().NotBeSameAs(response2);
         response1.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        response2.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
     }
 }
