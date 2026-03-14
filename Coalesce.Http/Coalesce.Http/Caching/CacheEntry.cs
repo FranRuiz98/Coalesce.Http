@@ -13,17 +13,39 @@
 /// <param name="ExpiresAt">The date and time when the cached entry expires and is no longer valid.</param>
 internal sealed record CacheEntry
 {
+    /// <summary>HTTP status code of the stored response (RFC 9111 §3 — a cache MUST retain the status code as part of the stored response).</summary>
     public required int StatusCode { get; init; }
 
+    /// <summary>Serialized response payload (RFC 9111 §3 — the response content is stored and replayed verbatim on cache hits).</summary>
     public required byte[] Body { get; init; }
 
+    /// <summary>Response header fields captured at store time and replayed on cache hits (RFC 9111 §3.1 — a cache MUST store and forward the original header fields).</summary>
     public required IReadOnlyDictionary<string, string[]> Headers { get; init; }
 
+    /// <summary>Absolute point in time at which the freshness lifetime ends (RFC 9111 §4.2 — once exceeded, <see cref="IsExpired"/> returns <see langword="true"/> and the entry must be revalidated or discarded).</summary>
     public required DateTimeOffset ExpiresAt { get; init; }
+
+    /// <summary>The date and time at which this entry was stored, used to compute the <c>Age</c> response header (RFC 9111 §5.1).</summary>
+    public required DateTimeOffset StoredAt { get; init; }
+
+    /// <summary>Value of the <c>ETag</c> response header, used as the primary validator in <c>If-None-Match</c> conditional requests (RFC 9111 §4.3.2).</summary>
+    public string? ETag { get; init; }
+
+    /// <summary>Value of the <c>Last-Modified</c> response header, used as a fallback validator for <c>If-Modified-Since</c> (RFC 9111 §4.3.1).</summary>
+    public DateTimeOffset? LastModified { get; init; }
+
+    /// <summary>Header field names from the <c>Vary</c> response header (RFC 9111 §4.1). Empty means no Vary constraint.</summary>
+    public string[] VaryFields { get; init; } = [];
+
+    /// <summary>Values of the request headers listed in <see cref="VaryFields"/>, captured when this entry was stored.</summary>
+    public IReadOnlyDictionary<string, string[]> VaryValues { get; init; } = new Dictionary<string, string[]>();
 
     /// <summary>
     /// Determines whether the cache entry has expired based on its expiration time.
     /// </summary>
     /// <returns>Returns <see langword="true"/> if the cache entry has expired; otherwise, <see langword="false"/>.</returns>
-    public bool IsExpired() => DateTimeOffset.UtcNow >= ExpiresAt;
+    public bool IsExpired()
+    {
+        return DateTimeOffset.UtcNow >= ExpiresAt;
+    }
 }
