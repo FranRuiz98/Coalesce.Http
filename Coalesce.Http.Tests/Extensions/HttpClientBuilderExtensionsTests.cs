@@ -7,193 +7,165 @@ namespace Coalesce.Http.Tests.Extensions;
 
 public class HttpClientBuilderExtensionsTests
 {
+    // ── AddCoalesceHttp ───────────────────────────────────────────────────────
+
     [Fact]
-    public void AddCoalescing_ShouldRegisterRequestCoalescerAsSingleton()
+    public void AddCoalesceHttp_RegistersCoalescerAsSingleton()
     {
-        // Arrange
         var services = new ServiceCollection();
-        var builder = services.AddHttpClient("test");
+        services.AddHttpClient("test").AddCoalesceHttp();
+        var sp = services.BuildServiceProvider();
 
-        // Act
-        builder.AddCoalescing();
-        var serviceProvider = services.BuildServiceProvider();
+        var a = sp.GetRequiredService<RequestCoalescer>();
+        var b = sp.GetRequiredService<RequestCoalescer>();
 
-        // Assert
-        var coalescer1 = serviceProvider.GetService<RequestCoalescer>();
-        var coalescer2 = serviceProvider.GetService<RequestCoalescer>();
-
-        coalescer1.Should().NotBeNull();
-        coalescer2.Should().NotBeNull();
-        coalescer1.Should().BeSameAs(coalescer2, "RequestCoalescer debería ser singleton");
+        a.Should().BeSameAs(b, "RequestCoalescer must be a singleton");
     }
 
     [Fact]
-    public void AddCoalescing_ShouldRegisterCoalescingHandler()
+    public void AddCoalesceHttp_ReturnsBuilder_ForChaining()
     {
-        // Arrange
         var services = new ServiceCollection();
         var builder = services.AddHttpClient("test");
 
-        // Act
-        builder.AddCoalescing();
-        var serviceProvider = services.BuildServiceProvider();
+        var result = builder.AddCoalesceHttp();
 
-        // Assert
-        var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
-        var httpClient = httpClientFactory.CreateClient("test");
-
-        httpClient.Should().NotBeNull();
+        result.Should().BeSameAs(builder);
     }
 
     [Fact]
-    public void AddCoalescing_ShouldReturnBuilder()
+    public void AddCoalesceHttp_AcceptsCacheOptionsConfigure()
     {
-        // Arrange
-        var services = new ServiceCollection();
-        var builder = services.AddHttpClient("test");
-
-        // Act
-        var result = builder.AddCoalescing();
-
-        // Assert
-        result.Should().BeSameAs(builder, "debería devolver el mismo builder para permitir chaining");
-    }
-
-    [Fact]
-    public void AddCoalescing_ShouldAllowChaining()
-    {
-        // Arrange
         var services = new ServiceCollection();
 
-        // Act
-        var builder = services
+        var act = () => services
             .AddHttpClient("test")
-            .AddCoalescing();
+            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromMinutes(10));
 
-        // Assert
-        builder.Should().NotBeNull();
-        services.Should().Contain(s => s.ServiceType == typeof(RequestCoalescer));
+        act.Should().NotThrow();
     }
 
     [Fact]
-    public async Task AddCoalescing_IntegrationTest_ShouldCoalesceRequests()
+    public async Task AddCoalesceHttp_CacheHit_DoesNotReachCoalescer()
     {
-        // Arrange
+        // Verify that a fresh cache hit is served entirely within CachingMiddleware
+        // and does NOT create an inflight entry in CoalescingHandler.
         var services = new ServiceCollection();
-        var callCount = 0;
-        var delay = new TaskCompletionSource<bool>();
+        int backendCallCount = 0;
 
         services
             .AddHttpClient("test")
-            .AddCoalescing()
-            .ConfigurePrimaryHttpMessageHandler(() =>
+            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromMinutes(5))
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
             {
-                return new TestHandler(async () =>
+                Interlocked.Increment(ref backendCallCount);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
                 {
-                    Interlocked.Increment(ref callCount);
-                    await delay.Task;
-                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("Success")
-                    };
+                    Content = new StringContent("cached-body")
                 });
-            });
+            }));
 
-        var serviceProvider = services.BuildServiceProvider();
-        var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
-        var client = httpClientFactory.CreateClient("test");
+        var sp = services.BuildServiceProvider();
+        var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("test");
 
-        // Act
-        var task1 = client.GetAsync("https://api.example.com/data");
-        var task2 = client.GetAsync("https://api.example.com/data");
-        var task3 = client.GetAsync("https://api.example.com/data");
+        // First request populates the cache
+        _ = await client.GetAsync("https://api.test/resource");
+        // Second request must be served from cache — backend not called again
+        _ = await client.GetAsync("https://api.test/resource");
 
-        await Task.Delay(50); // Dar tiempo para que todos los requests se inicien
-        delay.SetResult(true);
+        backendCallCount.Should().Be(1, "the second request must be served from CachingMiddleware without reaching the backend");
+    }
 
-        var responses = await Task.WhenAll(task1, task2, task3);
+    [Fact]
+    public async Task AddCoalesceHttp_CacheMiss_CoalescesIdenticalConcurrentRequests()
+    {
+        // Verify that on a cache miss, concurrent identical requests are collapsed into one
+        // backend call by CoalescingHandler, then all callers receive a response.
+        var services = new ServiceCollection();
+        int backendCallCount = 0;
+        var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // Assert
-        responses.Should().HaveCount(3);
+        services
+            .AddHttpClient("test")
+            .AddCoalesceHttp()
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(async () =>
+            {
+                Interlocked.Increment(ref backendCallCount);
+                await gate.Task;
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("body")
+                };
+            }));
+
+        var sp = services.BuildServiceProvider();
+        var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("test");
+
+        var t1 = client.GetAsync("https://api.test/item");
+        var t2 = client.GetAsync("https://api.test/item");
+        var t3 = client.GetAsync("https://api.test/item");
+
+        await Task.Delay(50); // allow all three to reach the coalescer
+        gate.SetResult(true);
+
+        var responses = await Task.WhenAll(t1, t2, t3);
+
+        backendCallCount.Should().Be(1, "CoalescingHandler must collapse concurrent misses into one backend call");
         responses.Should().OnlyContain(r => r.StatusCode == System.Net.HttpStatusCode.OK);
-        callCount.Should().Be(1, "requests idénticos deberían coalescerse");
     }
 
     [Fact]
-    public async Task AddCoalescing_WithMultipleClients_ShouldIsolatePipelines()
+    public async Task AddCoalesceHttp_WithMultipleClients_PipelinesAreIsolated()
     {
-        // Arrange
         var services = new ServiceCollection();
-        var callCountClient1 = 0;
-        var callCountClient2 = 0;
+        int countA = 0, countB = 0;
 
-        services
-            .AddHttpClient("client1")
-            .AddCoalescing()
-            .ConfigurePrimaryHttpMessageHandler(() =>
+        services.AddHttpClient("a").AddCoalesceHttp()
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
             {
-                return new TestHandler(() =>
-                {
-                    Interlocked.Increment(ref callCountClient1);
-                    return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
-                });
-            });
+                Interlocked.Increment(ref countA);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("a") });
+            }));
 
-        services
-            .AddHttpClient("client2")
-            .ConfigurePrimaryHttpMessageHandler(() =>
+        services.AddHttpClient("b").AddCoalesceHttp()
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
             {
-                return new TestHandler(() =>
-                {
-                    Interlocked.Increment(ref callCountClient2);
-                    return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
-                });
-            });
+                Interlocked.Increment(ref countB);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("b") });
+            }));
 
-        var serviceProvider = services.BuildServiceProvider();
-        var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
-        var client1 = httpClientFactory.CreateClient("client1");
-        var client2 = httpClientFactory.CreateClient("client2");
+        var factory = services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
 
-        // Act
-        await client1.GetAsync("https://api.example.com/data");
-        await client2.GetAsync("https://api.example.com/data");
+        _ = await factory.CreateClient("a").GetAsync("https://api.test/resource-a");
+        _ = await factory.CreateClient("b").GetAsync("https://api.test/resource-b");
 
-        // Assert
-        callCountClient1.Should().Be(1);
-        callCountClient2.Should().Be(1);
+        countA.Should().Be(1, "client a has its own isolated pipeline");
+        countB.Should().Be(1, "client b has its own isolated pipeline");
     }
 
     [Fact]
-    public void AddCoalescing_MultipleCallsToSameClient_ShouldNotDuplicateRegistrations()
+    public void AddCoalesceHttp_CalledTwice_CoalescerRemainsASingleton()
     {
-        // Arrange
         var services = new ServiceCollection();
         var builder = services.AddHttpClient("test");
 
-        // Act
-        builder.AddCoalescing();
-        builder.AddCoalescing(); // Llamar dos veces
+        builder.AddCoalesceHttp();
+        builder.AddCoalesceHttp();
 
-        var serviceProvider = services.BuildServiceProvider();
+        var sp = services.BuildServiceProvider();
+        var a = sp.GetRequiredService<RequestCoalescer>();
+        var b = sp.GetRequiredService<RequestCoalescer>();
 
-        // Assert - Verificar que RequestCoalescer sigue siendo singleton
-        var coalescer1 = serviceProvider.GetRequiredService<RequestCoalescer>();
-        var coalescer2 = serviceProvider.GetRequiredService<RequestCoalescer>();
-        
-        coalescer1.Should().BeSameAs(coalescer2, "RequestCoalescer debería seguir siendo singleton");
+        a.Should().BeSameAs(b, "RequestCoalescer must remain a singleton even when AddCoalesceHttp is called multiple times");
     }
 
     [Fact]
-    public void AddCoalescing_WithNullBuilder_ShouldThrowArgumentNullException()
+    public void AddCoalesceHttp_WithNullBuilder_Throws()
     {
-        // Arrange
         IHttpClientBuilder builder = null!;
 
-        // Act
-        Action act = () => builder.AddCoalescing();
+        Action act = () => builder.AddCoalesceHttp();
 
-        // Assert
         act.Should().Throw<NullReferenceException>();
     }
 

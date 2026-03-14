@@ -73,7 +73,7 @@ public class CoalescingPipelineIntegrationTests
 
         services
             .AddHttpClient("coalescing")
-            .AddCoalescing()
+            .AddCoalesceHttp()
             .ConfigurePrimaryHttpMessageHandler(() => primaryHandler);
 
         var provider = services.BuildServiceProvider();
@@ -119,10 +119,12 @@ public class CoalescingPipelineIntegrationTests
 
             await _release.Task.WaitAsync(cancellationToken);
 
-            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
             {
                 Content = new StringContent("ok")
             };
+            response.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoStore = true };
+            return response;
         }
     }
 
@@ -138,10 +140,12 @@ public class CoalescingPipelineIntegrationTests
         {
             Interlocked.Increment(ref _callCount);
 
-            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
             {
                 Content = new StringContent("ok")
-            });
+            };
+            response.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoStore = true };
+            return Task.FromResult(response);
         }
     }
 }
