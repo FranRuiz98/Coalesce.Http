@@ -12,25 +12,53 @@ namespace Coalesce.Http.Coalesce.Http.Extensions;
 public static class HttpClientBuilderExtensions
 {
     /// <summary>
-    /// Adds both RFC 9111-compliant HTTP caching and request coalescing to the pipeline in the
+    /// Adds RFC 9111-compliant HTTP caching and request coalescing to the pipeline in the
     /// correct order, preventing cache stampede without any registration-order risk.
     /// </summary>
     /// <remarks>
     /// <para>The resulting pipeline is:</para>
     /// <code>
-    /// CachingMiddleware (outer)
-    ///   └─ CoalescingHandler (inner)
-    ///        └─ HttpClientHandler
+    /// CachingMiddleware (outer)       ← registered by this method
+    ///   └─ CoalescingHandler (inner)  ← registered by this method
+    ///        └─ ResilienceHandler     ← Polly: call AddResilienceHandler() after this method
+    ///             └─ HttpClientHandler
     /// </code>
-    /// <para>Cache hits are returned immediately by <c>CachingMiddleware</c> and never reach
-    /// <c>CoalescingHandler</c>. On a cache miss, <c>CoalescingHandler</c> collapses all concurrent
-    /// requests for the same resource into a single backend call, preventing cache stampede.</para>
-    /// <para>To add Polly resilience (retry, hedging, timeout) call
-    /// <c>AddResilienceHandler</c> on the returned builder:</para>
+    /// <para>
+    /// Cache hits are served immediately by <c>CachingMiddleware</c> without reaching the network.
+    /// On a cache miss, <c>CoalescingHandler</c> collapses all concurrent identical requests into a
+    /// single origin call. Polly then applies retry or hedging to that single call.
+    /// </para>
+    /// <para>
+    /// Retry and hedging are intentionally delegated to Polly
+    /// (<c>Microsoft.Extensions.Http.Resilience</c>). Call <c>AddResilienceHandler</c> on the
+    /// returned builder <b>after</b> this method to ensure the correct pipeline order:
+    /// </para>
     /// <code>
-    /// IHttpClientBuilder b = builder.AddCoalesceHttp();
-    /// b.AddResilienceHandler("my-pipeline", b => { ... });
+    /// // Retry example
+    /// services.AddHttpClient("catalog")
+    ///     .AddCoalesceHttp()
+    ///     .AddResilienceHandler("resilience", b =>
+    ///     {
+    ///         b.AddRetry(new HttpRetryStrategyOptions { MaxRetryAttempts = 3 });
+    ///     });
+    ///
+    /// // Hedging example
+    /// services.AddHttpClient("catalog")
+    ///     .AddCoalesceHttp()
+    ///     .AddResilienceHandler("resilience", b =>
+    ///     {
+    ///         b.AddHedging(new HttpHedgingStrategyOptions
+    ///         {
+    ///             MaxHedgedAttempts = 2,
+    ///             Delay = TimeSpan.FromMilliseconds(100),
+    ///         });
+    ///     });
     /// </code>
+    /// <para>
+    /// Polly compatibility is verified by three rules tested in <c>PollyRealIntegrationTests</c>:
+    /// Rule 1 (retries share the coalesced execution), Rule 2 (conditional headers survive retries),
+    /// and Rule 3 (hedged attempts receive independent <see cref="HttpRequestMessage"/> instances).
+    /// </para>
     /// </remarks>
     /// <param name="builder">The <see cref="IHttpClientBuilder"/> to configure.</param>
     /// <param name="configureCaching">An optional action to configure <see cref="CacheOptions"/>.</param>
