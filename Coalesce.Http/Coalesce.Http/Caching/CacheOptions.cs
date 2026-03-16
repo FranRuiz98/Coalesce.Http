@@ -23,4 +23,12 @@ public sealed class CacheOptions
     /// <remarks>This property is useful for limiting the size of incoming requests to prevent excessive
     /// resource usage. The default value is set to 1,048,576 bytes (1 MB).</remarks>
     public long MaxBodySizeBytes { get; set; } = 1024 * 1024;
+
+    /// <summary>
+    /// Gets or sets the default stale-if-error window in seconds (RFC 5861 §4).
+    /// </summary>
+    /// <remarks>When a cached response does not carry a <c>stale-if-error</c> directive, this value is
+    /// used as the fallback. A value of <c>0</c> (the default) disables stale-if-error serving unless
+    /// the origin explicitly includes the directive in its response.</remarks>
+    public long DefaultStaleIfErrorSeconds { get; set; } = 0;
 }

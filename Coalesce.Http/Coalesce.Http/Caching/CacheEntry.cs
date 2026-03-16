@@ -40,6 +40,9 @@ internal sealed record CacheEntry
     /// <summary>Values of the request headers listed in <see cref="VaryFields"/>, captured when this entry was stored.</summary>
     public IReadOnlyDictionary<string, string[]> VaryValues { get; init; } = new Dictionary<string, string[]>();
 
+    /// <summary>Number of seconds after <see cref="ExpiresAt"/> during which a stale response may be served when the origin returns an error (RFC 5861 §4). Zero means the directive is absent.</summary>
+    public long StaleIfErrorSeconds { get; init; }
+
     /// <summary>
     /// Determines whether the cache entry has expired based on its expiration time.
     /// </summary>

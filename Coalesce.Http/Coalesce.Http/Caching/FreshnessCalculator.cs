@@ -42,4 +42,36 @@ internal static class FreshnessCalculator
         // §4.2.2 — heuristic / configured default
         return now + options.DefaultTtl;
     }
+
+    /// <summary>
+    /// Extracts the effective <c>stale-if-error</c> window in seconds from a response (RFC 5861 §4).
+    /// Falls back to <see cref="CacheOptions.DefaultStaleIfErrorSeconds"/> when the directive is absent.
+    /// </summary>
+    /// <param name="response">The HTTP response message to inspect.</param>
+    /// <param name="options">The cache options providing the fallback value.</param>
+    /// <returns>
+    /// Seconds after <c>ExpiresAt</c> during which a stale entry may be served on error,
+    /// or <c>0</c> when stale-if-error is disabled.
+    /// </returns>
+    public static long ExtractStaleIfError(HttpResponseMessage response, CacheOptions options)
+    {
+        CacheControlHeaderValue? cc = response.Headers.CacheControl;
+
+        if (cc is not null)
+        {
+            foreach (NameValueHeaderValue ext in cc.Extensions)
+            {
+                if (ext.Name.Equals("stale-if-error", StringComparison.OrdinalIgnoreCase))
+                {
+                    string? raw = ext.Value?.Trim('"');
+                    if (long.TryParse(raw, out long seconds) && seconds >= 0)
+                    {
+                        return seconds;
+                    }
+                }
+            }
+        }
+
+        return options.DefaultStaleIfErrorSeconds;
+    }
 }

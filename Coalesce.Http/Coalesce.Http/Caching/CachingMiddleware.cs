@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Caching.Memory;
+﻿using Coalesce.Http.Coalesce.Http.Metrics;
+using Microsoft.Extensions.Caching.Memory;
 using System.Net;
 using System.Net.Http.Headers;
 
@@ -6,7 +7,8 @@ namespace Coalesce.Http.Coalesce.Http.Caching;
 
 internal sealed class CachingMiddleware(IMemoryCache cache,
                                         ICacheKeyBuilder keyBuilder,
-                                        CacheOptions options) : DelegatingHandler
+                                        CacheOptions options,
+                                        CoalesceHttpMetrics? metrics = null) : DelegatingHandler
 {
     /// <summary>
     /// Determines whether the specified HTTP request is eligible for caching based on its method, headers, and content.
@@ -137,7 +139,8 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
             LastModified = response.Content?.Headers.LastModified,
             VaryFields = varyFields,
             VaryValues = varyValues,
-            ExpiresAt = expiresAt
+            ExpiresAt = expiresAt,
+            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options)
         };
 
         _ = cache.Set(key, entry);
@@ -205,17 +208,38 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
         // Fresh cache hit — skip if client demands revalidation (§5.2.1.4)
         if (entry is not null && !entry.IsExpired() && !requestNoCache)
         {
+            metrics?.RecordCacheHit();
             return CreateResponse(entry);
         }
 
         // Stale entry (or no-cache demand) with a validator → conditional revalidation
         if (entry is not null && (entry.ETag is not null || entry.LastModified is not null))
         {
+            metrics?.RecordRevalidation();
             return await RevalidateAsync(key, entry, request, ct);
         }
 
-        // Cache miss — full request
-        HttpResponseMessage response = await base.SendAsync(request, ct);
+        // Cache miss (or stale without validator) — full request
+        metrics?.RecordCacheMiss();
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await base.SendAsync(request, ct);
+        }
+        catch when (CanServeStaleOnError(entry))
+        {
+            metrics?.RecordStaleErrorServed();
+            return CreateResponse(entry!);
+        }
+
+        // RFC 5861 §4 — stale-if-error: serve stale on 5xx if within the error window
+        if (entry is not null && (int)response.StatusCode >= 500 && CanServeStaleOnError(entry))
+        {
+            response.Dispose();
+            metrics?.RecordStaleErrorServed();
+            return CreateResponse(entry);
+        }
 
         if (IsResponseCacheable(response))
         {
@@ -270,19 +294,44 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
         // §4.3.1 — prefer ETag / If-None-Match; fall back to Last-Modified / If-Modified-Since
         if (entry.ETag is not null)
         {
-            _ = request.Headers.TryAddWithoutValidation("If-None-Match", entry.ETag);
+            // Remove before add: prevents a duplicate value if the same request object
+            // reaches RevalidateAsync more than once (e.g. via an outer retry layer).
+            request.Headers.Remove("If-None-Match");
+            request.Headers.TryAddWithoutValidation("If-None-Match", entry.ETag);
         }
         else if (entry.LastModified is DateTimeOffset lastModified)
         {
             request.Headers.IfModifiedSince = lastModified;
         }
 
-        HttpResponseMessage response = await base.SendAsync(request, ct);
+        HttpResponseMessage response;
+        try
+        {
+            response = await base.SendAsync(request, ct);
+        }
+        catch when (CanServeStaleOnError(entry))
+        {
+            metrics?.RecordStaleErrorServed();
+            return CreateResponse(entry);
+        }
+
+        // RFC 5861 §4 — stale-if-error: serve stale on 5xx if within the error window
+        if ((int)response.StatusCode >= 500 && CanServeStaleOnError(entry))
+        {
+            response.Dispose();
+            metrics?.RecordStaleErrorServed();
+            return CreateResponse(entry);
+        }
 
         if (response.StatusCode == HttpStatusCode.NotModified)
         {
-            CacheEntry refreshed = entry with { ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options) };
+            CacheEntry refreshed = entry with
+            {
+                ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options),
+                StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options)
+            };
             _ = cache.Set(key, refreshed);
+            metrics?.RecordCacheHit();
             return CreateResponse(refreshed);
         }
 
@@ -292,6 +341,20 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
         }
 
         return response;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the given entry has a positive stale-if-error window
+    /// that has not yet expired (RFC 5861 §4).
+    /// </summary>
+    private static bool CanServeStaleOnError(CacheEntry? entry)
+    {
+        if (entry is null || entry.StaleIfErrorSeconds <= 0)
+        {
+            return false;
+        }
+
+        return DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleIfErrorSeconds);
     }
 
     /// <summary>

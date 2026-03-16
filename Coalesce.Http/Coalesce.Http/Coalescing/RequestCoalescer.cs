@@ -1,4 +1,5 @@
-﻿using System.Collections.Concurrent;
+﻿using Coalesce.Http.Coalesce.Http.Metrics;
+using System.Collections.Concurrent;
 
 namespace Coalesce.Http.Coalesce.Http.Coalescing;
 
@@ -6,7 +7,7 @@ namespace Coalesce.Http.Coalesce.Http.Coalescing;
 /// High-performance request coalescer using TaskCompletionSource pattern.
 /// This implementation minimizes allocations and contention under extreme load (100k+ RPS).
 /// </summary>
-public sealed partial class RequestCoalescer
+public sealed partial class RequestCoalescer(CoalesceHttpMetrics? metrics = null)
 {
     private readonly ConcurrentDictionary<RequestKey, CoalescedRequest> _inflight = new();
 
@@ -27,6 +28,7 @@ public sealed partial class RequestCoalescer
             // If there's already an inflight request for this key, wait for it to complete and return a clone of the response
             if (_inflight.TryGetValue(key, out CoalescedRequest? existing))
             {
+                metrics?.RecordCoalescedDeduplicated();
                 CachedResponse cachedResponse = await existing.Tcs.Task
                     .WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
@@ -42,6 +44,8 @@ public sealed partial class RequestCoalescer
                 // Another thread won the race - try again to get the existing request
                 continue;
             }
+
+            metrics?.IncrementInflight();
 
             // We are the winner - execute the factory and set the result for all waiters
             try
@@ -66,6 +70,7 @@ public sealed partial class RequestCoalescer
             finally
             {
                 _inflight.TryRemove(key, out _);
+                metrics?.DecrementInflight();
             }
         }
     }
