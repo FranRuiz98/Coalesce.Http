@@ -1,5 +1,6 @@
 using Coalesce.Http.Coalesce.Http.Coalescing;
 using Coalesce.Http.Coalesce.Http.Handlers;
+using Coalesce.Http.Coalesce.Http.Options;
 using FluentAssertions;
 using NSubstitute;
 
@@ -13,7 +14,7 @@ public class CoalescingHandlerTests
 
     public CoalescingHandlerTests()
     {
-        _coalescer = new RequestCoalescer();
+        _coalescer = new RequestCoalescer(new CoalescerOptions());
         _innerHandler = new TestMessageHandler();
         _handler = new CoalescingHandler(_coalescer)
         {

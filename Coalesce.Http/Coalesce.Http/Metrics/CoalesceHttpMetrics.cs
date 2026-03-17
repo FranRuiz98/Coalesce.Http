@@ -34,7 +34,7 @@ public sealed class CoalesceHttpMetrics : IDisposable
     /// <summary>Initialises a new instance of <see cref="CoalesceHttpMetrics"/> with the default meter name.</summary>
     public CoalesceHttpMetrics()
     {
-        _meter = new Meter(MeterName, "0.0.3");
+        _meter = new Meter(MeterName, "0.0.4");
 
         _cacheHits = _meter.CreateCounter<long>(
             "coalesce_http.cache.hits",

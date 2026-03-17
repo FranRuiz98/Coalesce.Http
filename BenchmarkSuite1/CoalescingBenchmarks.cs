@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using Coalesce.Http.Coalesce.Http.Coalescing;
+using Coalesce.Http.Coalesce.Http.Options;
 using System.Net;
 
 [ShortRunJob]
@@ -13,7 +14,7 @@ public class CoalescingBenchmarks
     [GlobalSetup]
     public void Setup()
     {
-        _coalescer = new RequestCoalescer();
+        _coalescer = new RequestCoalescer(new CoalescerOptions());
         _key = new RequestKey("GET", "https://api.example.com/benchmark");
     }
 

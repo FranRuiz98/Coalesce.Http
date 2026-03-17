@@ -1,4 +1,5 @@
 using Coalesce.Http.Coalesce.Http.Coalescing;
+using Coalesce.Http.Coalesce.Http.Options;
 using FluentAssertions;
 
 namespace Coalesce.Http.Tests.Coalescing;
@@ -9,7 +10,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_ShouldExecuteFactoryOnce()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var executionCount = 0;
 
@@ -31,7 +32,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_WithMultipleConcurrentCalls_ShouldExecuteFactoryOnce()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var executionCount = 0;
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
@@ -68,7 +69,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_WithDifferentKeys_ShouldExecuteFactoryMultipleTimes()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key1 = new RequestKey("GET", "https://api.example.com/data1");
         var key2 = new RequestKey("GET", "https://api.example.com/data2");
         var executionCount = 0;
@@ -92,7 +93,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_ShouldCleanupAfterCompletion()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var executionCount = 0;
 
@@ -114,7 +115,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_WhenFactoryThrows_ShouldPropagateException()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var expectedException = new InvalidOperationException("Test exception");
 
@@ -135,7 +136,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_WhenFactoryThrows_MultipleConcurrentCalls_ShouldPropagateExceptionToAll()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
         var executionCount = 0;
@@ -164,7 +165,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_AfterException_ShouldCleanupAndAllowRetry()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var executionCount = 0;
 
@@ -201,7 +202,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_WithDifferentMethods_ShouldExecuteSeparately()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var getKey = new RequestKey("GET", "https://api.example.com/data");
         var postKey = new RequestKey("POST", "https://api.example.com/data");
         var executionCount = 0;
@@ -225,7 +226,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_HighConcurrency_ShouldHandleCorrectly()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var executionCount = 0;
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
@@ -260,7 +261,7 @@ public class RequestCoalescerTests
     public async Task ExecuteAsync_WithCancellation_ShouldNotAffectOtherCalls()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
 

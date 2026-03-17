@@ -1,4 +1,5 @@
 using Coalesce.Http.Coalesce.Http.Coalescing;
+using Coalesce.Http.Coalesce.Http.Options;
 using FluentAssertions;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -20,7 +21,7 @@ public class RequestCoalescerPerformanceTests
     public async Task ExecuteAsync_WithThousandsOfConcurrentCalls_ShouldExecuteOnce()
     {
         // Arrange
-        RequestCoalescer coalescer = new();
+        RequestCoalescer coalescer = new(new CoalescerOptions());
         RequestKey key = new("GET", "https://api.example.com/data");
         int executionCount = 0;
         TaskCompletionSource<HttpResponseMessage> tcs = new();
@@ -77,7 +78,7 @@ public class RequestCoalescerPerformanceTests
     [Fact]
     public async Task ExecuteAsync_WithMultipleKeysUnderLoad_ShouldCoalesceCorrectly()
     {
-        RequestCoalescer coalescer = new();
+        RequestCoalescer coalescer = new(new CoalescerOptions());
         const int numberOfKeys = 100;
         const int callsPerKey = 100;
         ConcurrentDictionary<string, int> executionCounts = new();
@@ -137,7 +138,7 @@ public class RequestCoalescerPerformanceTests
     public async Task ExecuteAsync_UnderSustainedLoad_ShouldNotLeakMemory()
     {
         // Arrange
-        RequestCoalescer coalescer = new();
+        RequestCoalescer coalescer = new(new CoalescerOptions());
         const int iterations = 1000;
         const int callsPerIteration = 10;
 
@@ -188,7 +189,7 @@ public class RequestCoalescerPerformanceTests
     public async Task ExecuteAsync_SequentialRequestsAfterCompletion_ShouldCleanupQuickly()
     {
         // Arrange
-        RequestCoalescer coalescer = new();
+        RequestCoalescer coalescer = new(new CoalescerOptions());
         RequestKey key = new("GET", "https://api.example.com/data");
         const int sequentialCalls = 1000;
         int executionCount = 0;
@@ -224,7 +225,7 @@ public class RequestCoalescerPerformanceTests
     public async Task ExecuteAsync_MixedConcurrentAndSequential_ShouldHandleCorrectly()
     {
         // Arrange
-        RequestCoalescer coalescer = new();
+        RequestCoalescer coalescer = new(new CoalescerOptions());
         RequestKey key = new("GET", "https://api.example.com/data");
         int executionCount = 0;
         const int rounds = 100;

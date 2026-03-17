@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Coalesce.Http.Coalesce.Http.Coalescing;
+using Coalesce.Http.Coalesce.Http.Options;
 using FluentAssertions;
 
 namespace Coalesce.Http.Tests.Coalescing;
@@ -17,7 +18,7 @@ public class ResponseCloningTests
     public async Task ExecuteAsync_WithConcurrentCalls_EachCallerCanReadContent()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var expectedContent = "Test response content";
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
@@ -67,7 +68,7 @@ public class ResponseCloningTests
     public async Task ExecuteAsync_WithConcurrentCalls_EachCallerCanDisposeIndependently()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var expectedContent = "Test response content";
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
@@ -119,7 +120,7 @@ public class ResponseCloningTests
     public async Task ExecuteAsync_WithConcurrentCalls_WorksWithReadFromJsonAsync()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/users/1");
         var expectedUser = new User { Id = 1, Name = "John Doe", Email = "john@example.com" };
         var json = JsonSerializer.Serialize(expectedUser);
@@ -169,7 +170,7 @@ public class ResponseCloningTests
     public async Task ExecuteAsync_WithConcurrentCalls_AvoidStreamingIssues()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var expectedContent = "Large response content that could cause streaming issues";
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
@@ -218,7 +219,7 @@ public class ResponseCloningTests
     public async Task ExecuteAsync_WithConcurrentCalls_CopiesHeadersCorrectly()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/data");
         var expectedContent = "Test content";
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
@@ -267,7 +268,7 @@ public class ResponseCloningTests
     public async Task ExecuteAsync_WithConcurrentCalls_WorksWithBinaryContent()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/image.png");
         var expectedBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }; // PNG header
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
@@ -314,7 +315,7 @@ public class ResponseCloningTests
     public async Task ExecuteAsync_WithConcurrentCalls_WorksWithNoContent()
     {
         // Arrange
-        var coalescer = new RequestCoalescer();
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
         var key = new RequestKey("GET", "https://api.example.com/status");
         var tcs = new TaskCompletionSource<HttpResponseMessage>();
 

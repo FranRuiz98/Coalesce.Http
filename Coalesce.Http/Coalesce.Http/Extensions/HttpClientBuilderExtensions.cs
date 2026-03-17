@@ -6,6 +6,7 @@ using Coalesce.Http.Coalesce.Http.Options;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace Coalesce.Http.Coalesce.Http.Extensions;
 
@@ -55,7 +56,7 @@ public static class HttpClientBuilderExtensions
     ///     });
     /// </code>
     /// <para>
-    /// Polly compatibility is verified by three rules tested in <c>PollyRealIntegrationTests</c>:
+    /// Polly compatibility is verified by three rules:
     /// Rule 1 (retries share the coalesced execution), Rule 2 (conditional headers survive retries),
     /// and Rule 3 (hedged attempts receive independent <see cref="HttpRequestMessage"/> instances).
     /// </para>
@@ -114,13 +115,30 @@ public static class HttpClientBuilderExtensions
 
     private static void AddCoalescing(IHttpClientBuilder builder, CoalescerOptions coalescerOptions)
     {
-        builder.Services.TryAddSingleton<RequestCoalescer>(sp =>
-            new RequestCoalescer(sp.GetService<CoalesceHttpMetrics>()));
+        // Each call captures its own RequestCoalescer in the closure so that
+        // duplicate AddCoalesceHttp() calls produce independent coalescing scopes
+        // and don't deadlock through shared inflight state.
+        RequestCoalescer? coalescer = null;
+        Lock coalescerLock = new();
 
-        _ = builder.Services.AddTransient<CoalescingHandler>(sp =>
-            new CoalescingHandler(sp.GetRequiredService<RequestCoalescer>(), coalescerOptions));
+        _ = builder.AddHttpMessageHandler(sp =>
+        {
+            if (coalescer is null)
+            {
+                lock (coalescerLock)
+                {
+                    coalescer ??= new RequestCoalescer(
+                        coalescerOptions,
+                        sp.GetService<CoalesceHttpMetrics>(),
+                        sp.GetService<ILoggerFactory>()?.CreateLogger<RequestCoalescer>());
+                }
+            }
 
-        _ = builder.AddHttpMessageHandler<CoalescingHandler>();
+            return new CoalescingHandler(
+                coalescer,
+                coalescerOptions,
+                sp.GetService<ILoggerFactory>()?.CreateLogger<CoalescingHandler>());
+        });
     }
 
     private static void AddHttpCache(IHttpClientBuilder builder, Action<CacheOptions>? configure)
@@ -131,14 +149,13 @@ public static class HttpClientBuilderExtensions
         _ = builder.Services.AddMemoryCache();
         builder.Services.TryAddSingleton<ICacheKeyBuilder, DefaultCacheKeyBuilder>();
 
-        _ = builder.Services.AddTransient<CachingMiddleware>(sp =>
+        _ = builder.AddHttpMessageHandler(sp =>
             new CachingMiddleware(
                 sp.GetRequiredService<IMemoryCache>(),
                 sp.GetRequiredService<ICacheKeyBuilder>(),
                 options,
-                sp.GetService<CoalesceHttpMetrics>()));
-
-        _ = builder.AddHttpMessageHandler<CachingMiddleware>();
+                sp.GetService<CoalesceHttpMetrics>(),
+                sp.GetService<ILoggerFactory>()?.CreateLogger<CachingMiddleware>()));
     }
 }
 

@@ -1,15 +1,20 @@
 ﻿using Coalesce.Http.Coalesce.Http.Metrics;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
 using System.Net.Http.Headers;
 
 namespace Coalesce.Http.Coalesce.Http.Caching;
 
-internal sealed class CachingMiddleware(IMemoryCache cache,
+internal sealed partial class CachingMiddleware(IMemoryCache cache,
                                         ICacheKeyBuilder keyBuilder,
                                         CacheOptions options,
-                                        CoalesceHttpMetrics? metrics = null) : DelegatingHandler
+                                        CoalesceHttpMetrics? metrics = null,
+                                        ILogger<CachingMiddleware>? logger = null) : DelegatingHandler
 {
+    private readonly ILogger logger = logger ?? NullLogger<CachingMiddleware>.Instance;
+
     /// <summary>
     /// Determines whether the specified HTTP request is eligible for caching based on its method, headers, and content.
     /// </summary>
@@ -209,6 +214,7 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
         if (entry is not null && !entry.IsExpired() && !requestNoCache)
         {
             metrics?.RecordCacheHit();
+            LogCacheHit(key);
             return CreateResponse(entry);
         }
 
@@ -216,11 +222,13 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
         if (entry is not null && (entry.ETag is not null || entry.LastModified is not null))
         {
             metrics?.RecordRevalidation();
+            LogRevalidation(key);
             return await RevalidateAsync(key, entry, request, ct);
         }
 
         // Cache miss (or stale without validator) — full request
         metrics?.RecordCacheMiss();
+        LogCacheMiss(key);
 
         HttpResponseMessage response;
         try
@@ -230,6 +238,7 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
         catch when (CanServeStaleOnError(entry))
         {
             metrics?.RecordStaleErrorServed();
+            LogStaleIfErrorServed(key);
             return CreateResponse(entry!);
         }
 
@@ -238,11 +247,13 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
         {
             response.Dispose();
             metrics?.RecordStaleErrorServed();
+            LogStaleIfErrorServed(key);
             return CreateResponse(entry);
         }
 
         if (IsResponseCacheable(response))
         {
+            LogCacheStore(key);
             await StoreAsync(key, request, response, ct);
         }
 
@@ -296,8 +307,8 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
         {
             // Remove before add: prevents a duplicate value if the same request object
             // reaches RevalidateAsync more than once (e.g. via an outer retry layer).
-            request.Headers.Remove("If-None-Match");
-            request.Headers.TryAddWithoutValidation("If-None-Match", entry.ETag);
+            _ = request.Headers.Remove("If-None-Match");
+            _ = request.Headers.TryAddWithoutValidation("If-None-Match", entry.ETag);
         }
         else if (entry.LastModified is DateTimeOffset lastModified)
         {
@@ -349,12 +360,7 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
     /// </summary>
     private static bool CanServeStaleOnError(CacheEntry? entry)
     {
-        if (entry is null || entry.StaleIfErrorSeconds <= 0)
-        {
-            return false;
-        }
-
-        return DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleIfErrorSeconds);
+        return entry is not null && entry.StaleIfErrorSeconds > 0 && DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleIfErrorSeconds);
     }
 
     /// <summary>
@@ -384,4 +390,19 @@ internal sealed class CachingMiddleware(IMemoryCache cache,
 
         return headers;
     }
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: hit for {CacheKey}")]
+    private partial void LogCacheHit(string cacheKey);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: miss for {CacheKey}")]
+    private partial void LogCacheMiss(string cacheKey);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: conditional revalidation for {CacheKey}")]
+    private partial void LogRevalidation(string cacheKey);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cache: serving stale-if-error for {CacheKey}")]
+    private partial void LogStaleIfErrorServed(string cacheKey);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: storing response for {CacheKey}")]
+    private partial void LogCacheStore(string cacheKey);
 }

@@ -1,6 +1,7 @@
 using Coalesce.Http.Coalesce.Http.Caching;
 using Coalesce.Http.Coalesce.Http.Coalescing;
 using Coalesce.Http.Coalesce.Http.Metrics;
+using Coalesce.Http.Coalesce.Http.Options;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
 using System.Diagnostics.Metrics;
@@ -179,7 +180,7 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
     [Fact]
     public async Task Coalescing_RecordsDeduplicatedRequests()
     {
-        RequestCoalescer coalescer = new(_metrics);
+        RequestCoalescer coalescer = new(new CoalescerOptions(), _metrics);
         RequestKey key = new("GET", "https://api.test/coalesced");
 
         TaskCompletionSource<HttpResponseMessage> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -202,7 +203,7 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
     [Fact]
     public async Task Coalescing_InflightReturnsToZeroAfterCompletion()
     {
-        RequestCoalescer coalescer = new(_metrics);
+        RequestCoalescer coalescer = new(new CoalescerOptions(), _metrics);
         RequestKey key = new("GET", "https://api.test/inflight");
 
         TaskCompletionSource<HttpResponseMessage> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);

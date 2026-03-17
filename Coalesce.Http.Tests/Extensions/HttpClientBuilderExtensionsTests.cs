@@ -1,4 +1,3 @@
-using Coalesce.Http.Coalesce.Http.Coalescing;
 using Coalesce.Http.Coalesce.Http.Extensions;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,16 +9,28 @@ public class HttpClientBuilderExtensionsTests
     // ── AddCoalesceHttp ───────────────────────────────────────────────────────
 
     [Fact]
-    public void AddCoalesceHttp_RegistersCoalescerAsSingleton()
+    public async Task AddCoalesceHttp_RegistersPipelineCorrectly()
     {
         var services = new ServiceCollection();
-        services.AddHttpClient("test").AddCoalesceHttp();
+        int backendCalls = 0;
+
+        services.AddHttpClient("test").AddCoalesceHttp()
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
+            {
+                Interlocked.Increment(ref backendCalls);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("ok")
+                });
+            }));
+
         var sp = services.BuildServiceProvider();
+        var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("test");
 
-        var a = sp.GetRequiredService<RequestCoalescer>();
-        var b = sp.GetRequiredService<RequestCoalescer>();
+        var response = await client.GetAsync("https://api.test/resource");
 
-        a.Should().BeSameAs(b, "RequestCoalescer must be a singleton");
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        backendCalls.Should().Be(1);
     }
 
     [Fact]
@@ -144,19 +155,30 @@ public class HttpClientBuilderExtensionsTests
     }
 
     [Fact]
-    public void AddCoalesceHttp_CalledTwice_CoalescerRemainsASingleton()
+    public async Task AddCoalesceHttp_CalledTwice_PipelineStillWorks()
     {
         var services = new ServiceCollection();
+        int backendCalls = 0;
         var builder = services.AddHttpClient("test");
 
         builder.AddCoalesceHttp();
         builder.AddCoalesceHttp();
 
-        var sp = services.BuildServiceProvider();
-        var a = sp.GetRequiredService<RequestCoalescer>();
-        var b = sp.GetRequiredService<RequestCoalescer>();
+        builder.ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
+        {
+            Interlocked.Increment(ref backendCalls);
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("ok")
+            });
+        }));
 
-        a.Should().BeSameAs(b, "RequestCoalescer must remain a singleton even when AddCoalesceHttp is called multiple times");
+        var sp = services.BuildServiceProvider();
+        var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("test");
+
+        var response = await client.GetAsync("https://api.test/resource");
+
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
     }
 
     [Fact]

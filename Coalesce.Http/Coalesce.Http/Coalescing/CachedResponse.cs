@@ -22,10 +22,10 @@ internal sealed record CachedResponse(
     IReadOnlyList<KeyValuePair<string, IEnumerable<string>>> ContentHeaders
 )
 {
-    public static async Task<CachedResponse> FromResponseAsync(HttpResponseMessage response)
+    public static async Task<CachedResponse> FromResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken = default)
     {
         byte[] bodyBytes = response.Content is not null
-            ? await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
+            ? await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false)
             : [];
 
         // RequestMessage is intentionally not cached. It is IDisposable, not thread-safe,

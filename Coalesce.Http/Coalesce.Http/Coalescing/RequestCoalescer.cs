@@ -1,4 +1,7 @@
 ﻿using Coalesce.Http.Coalesce.Http.Metrics;
+using Coalesce.Http.Coalesce.Http.Options;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
 
 namespace Coalesce.Http.Coalesce.Http.Coalescing;
@@ -7,8 +10,9 @@ namespace Coalesce.Http.Coalesce.Http.Coalescing;
 /// High-performance request coalescer using TaskCompletionSource pattern.
 /// This implementation minimizes allocations and contention under extreme load (100k+ RPS).
 /// </summary>
-public sealed partial class RequestCoalescer(CoalesceHttpMetrics? metrics = null)
+public sealed partial class RequestCoalescer(CoalescerOptions options, CoalesceHttpMetrics? metrics = null, ILogger<RequestCoalescer>? logger = null)
 {
+    private readonly ILogger logger = logger ?? NullLogger<RequestCoalescer>.Instance;
     private readonly ConcurrentDictionary<RequestKey, CoalescedRequest> _inflight = new();
 
     /// <summary>
@@ -29,11 +33,27 @@ public sealed partial class RequestCoalescer(CoalesceHttpMetrics? metrics = null
             if (_inflight.TryGetValue(key, out CoalescedRequest? existing))
             {
                 metrics?.RecordCoalescedDeduplicated();
-                CachedResponse cachedResponse = await existing.Tcs.Task
-                    .WaitAsync(cancellationToken)
-                    .ConfigureAwait(false);
+                LogCoalescedWaiter(key);
 
-                return cachedResponse.ToHttpResponseMessage();
+                try
+                {
+                    CachedResponse cachedResponse = options.CoalescingTimeout is TimeSpan timeout
+                        ? await existing.Tcs.Task
+                            .WaitAsync(timeout, cancellationToken)
+                            .ConfigureAwait(false)
+                        : await existing.Tcs.Task
+                            .WaitAsync(cancellationToken)
+                            .ConfigureAwait(false);
+
+                    LogCoalescedWaiterCompleted(key);
+                    return cachedResponse.ToHttpResponseMessage();
+                }
+                catch (TimeoutException)
+                {
+                    LogCoalescedWaiterTimeout(key);
+                    // Timeout waiting for the winner — fall through to execute independently
+                    break;
+                }
             }
 
             // Try being winner for this key
@@ -46,6 +66,7 @@ public sealed partial class RequestCoalescer(CoalesceHttpMetrics? metrics = null
             }
 
             metrics?.IncrementInflight();
+            LogWinnerStart(key);
 
             // We are the winner - execute the factory and set the result for all waiters
             try
@@ -56,15 +77,17 @@ public sealed partial class RequestCoalescer(CoalesceHttpMetrics? metrics = null
 
                 // Cache the response for other waiters. We read the entire response into memory to allow cloning for multiple callers.
                 // Solves the problem of HttpResponseMessage being a one-time-use object that can't be shared across multiple callers.
-                CachedResponse cachedResponse = await CachedResponse.FromResponseAsync(response).ConfigureAwait(false);
+                CachedResponse cachedResponse = await CachedResponse.FromResponseAsync(response, cancellationToken).ConfigureAwait(false);
 
                 coalescedRequest.Tcs.SetResult(cachedResponse);
 
+                LogWinnerCompleted(key, (int)response.StatusCode);
                 return cachedResponse.ToHttpResponseMessage();
             }
             catch (Exception ex)
             {
                 coalescedRequest.Tcs.SetException(ex);
+                LogWinnerError(key, ex);
                 throw;
             }
             finally
@@ -73,5 +96,32 @@ public sealed partial class RequestCoalescer(CoalesceHttpMetrics? metrics = null
                 metrics?.DecrementInflight();
             }
         }
+
+        // Timeout fallback: execute the factory independently (no coalescing)
+        LogTimeoutFallbackStart(key);
+        using HttpResponseMessage fallbackResponse = await factory().ConfigureAwait(false);
+        CachedResponse fallbackCached = await CachedResponse.FromResponseAsync(fallbackResponse, cancellationToken).ConfigureAwait(false);
+        return fallbackCached.ToHttpResponseMessage();
     }
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coalescing: waiter attached for {Key}")]
+    private partial void LogCoalescedWaiter(RequestKey key);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coalescing: waiter received response for {Key}")]
+    private partial void LogCoalescedWaiterCompleted(RequestKey key);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Coalescing: waiter timed out for {Key}, falling back to independent request")]
+    private partial void LogCoalescedWaiterTimeout(RequestKey key);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coalescing: winner executing request for {Key}")]
+    private partial void LogWinnerStart(RequestKey key);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coalescing: winner completed {Key} with status {StatusCode}")]
+    private partial void LogWinnerCompleted(RequestKey key, int statusCode);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Coalescing: winner failed for {Key}")]
+    private partial void LogWinnerError(RequestKey key, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Coalescing: timeout fallback executing independent request for {Key}")]
+    private partial void LogTimeoutFallbackStart(RequestKey key);
 }
