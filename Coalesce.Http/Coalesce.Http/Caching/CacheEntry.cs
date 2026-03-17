@@ -1,4 +1,4 @@
-﻿namespace Coalesce.Http.Coalesce.Http.Caching;
+﻿namespace Coalesce.Http.Caching;
 
 /// <summary>
 /// Represents a cached HTTP response, including its status code, content type, body, headers, and expiration time.

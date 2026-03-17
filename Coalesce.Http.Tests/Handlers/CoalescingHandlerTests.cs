@@ -1,6 +1,6 @@
-using Coalesce.Http.Coalesce.Http.Coalescing;
-using Coalesce.Http.Coalesce.Http.Handlers;
-using Coalesce.Http.Coalesce.Http.Options;
+using Coalesce.Http.Coalescing;
+using Coalesce.Http.Handlers;
+using Coalesce.Http.Options;
 using FluentAssertions;
 using NSubstitute;
 

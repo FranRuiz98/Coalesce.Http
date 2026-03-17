@@ -1,11 +1,11 @@
-﻿using Coalesce.Http.Coalesce.Http.Coalescing;
-using Coalesce.Http.Coalesce.Http.Options;
+﻿using Coalesce.Http.Coalescing;
+using Coalesce.Http.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Coalesce.Http.Coalesce.Http.Handlers;
+namespace Coalesce.Http.Handlers;
 
-public sealed partial class CoalescingHandler(RequestCoalescer coalescer, CoalescerOptions? options = null, ILogger<CoalescingHandler>? logger = null) : DelegatingHandler
+internal sealed partial class CoalescingHandler(RequestCoalescer coalescer, CoalescerOptions? options = null, ILogger<CoalescingHandler>? logger = null) : DelegatingHandler
 {
     private readonly ILogger logger = logger ?? NullLogger<CoalescingHandler>.Instance;
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

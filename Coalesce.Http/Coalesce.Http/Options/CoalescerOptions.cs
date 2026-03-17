@@ -1,6 +1,6 @@
-﻿namespace Coalesce.Http.Coalesce.Http.Options;
+﻿namespace Coalesce.Http.Options;
 
-public class CoalescerOptions
+public sealed class CoalescerOptions
 {
     public bool Enabled { get; set; } = true;
 

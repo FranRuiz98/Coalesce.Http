@@ -1,16 +1,16 @@
-﻿using Coalesce.Http.Coalesce.Http.Metrics;
-using Coalesce.Http.Coalesce.Http.Options;
+﻿using Coalesce.Http.Metrics;
+using Coalesce.Http.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
 
-namespace Coalesce.Http.Coalesce.Http.Coalescing;
+namespace Coalesce.Http.Coalescing;
 
 /// <summary>
 /// High-performance request coalescer using TaskCompletionSource pattern.
 /// This implementation minimizes allocations and contention under extreme load (100k+ RPS).
 /// </summary>
-public sealed partial class RequestCoalescer(CoalescerOptions options, CoalesceHttpMetrics? metrics = null, ILogger<RequestCoalescer>? logger = null)
+internal sealed partial class RequestCoalescer(CoalescerOptions options, CoalesceHttpMetrics? metrics = null, ILogger<RequestCoalescer>? logger = null)
 {
     private readonly ILogger logger = logger ?? NullLogger<RequestCoalescer>.Instance;
     private readonly ConcurrentDictionary<RequestKey, CoalescedRequest> _inflight = new();

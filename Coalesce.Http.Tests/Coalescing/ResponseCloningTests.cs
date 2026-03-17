@@ -2,8 +2,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
-using Coalesce.Http.Coalesce.Http.Coalescing;
-using Coalesce.Http.Coalesce.Http.Options;
+using Coalesce.Http.Coalescing;
+using Coalesce.Http.Options;
 using FluentAssertions;
 
 namespace Coalesce.Http.Tests.Coalescing;

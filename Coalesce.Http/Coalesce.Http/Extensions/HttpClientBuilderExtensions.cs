@@ -1,14 +1,14 @@
-﻿using Coalesce.Http.Coalesce.Http.Caching;
-using Coalesce.Http.Coalesce.Http.Coalescing;
-using Coalesce.Http.Coalesce.Http.Handlers;
-using Coalesce.Http.Coalesce.Http.Metrics;
-using Coalesce.Http.Coalesce.Http.Options;
+﻿using Coalesce.Http.Caching;
+using Coalesce.Http.Coalescing;
+using Coalesce.Http.Handlers;
+using Coalesce.Http.Metrics;
+using Coalesce.Http.Options;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 
-namespace Coalesce.Http.Coalesce.Http.Extensions;
+namespace Coalesce.Http.Extensions;
 
 public static class HttpClientBuilderExtensions
 {

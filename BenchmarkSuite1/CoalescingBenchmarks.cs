@@ -1,6 +1,6 @@
 using BenchmarkDotNet.Attributes;
-using Coalesce.Http.Coalesce.Http.Coalescing;
-using Coalesce.Http.Coalesce.Http.Options;
+using Coalesce.Http.Coalescing;
+using Coalesce.Http.Options;
 using System.Net;
 
 [ShortRunJob]

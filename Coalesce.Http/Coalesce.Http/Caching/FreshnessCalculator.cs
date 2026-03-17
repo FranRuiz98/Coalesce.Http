@@ -1,6 +1,6 @@
 using System.Net.Http.Headers;
 
-namespace Coalesce.Http.Coalesce.Http.Caching;
+namespace Coalesce.Http.Caching;
 
 /// <summary>
 /// Computes the freshness lifetime of an HTTP response according to RFC 9111 §4.2.1.

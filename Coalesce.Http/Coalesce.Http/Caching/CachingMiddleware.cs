@@ -1,11 +1,11 @@
-﻿using Coalesce.Http.Coalesce.Http.Metrics;
+﻿using Coalesce.Http.Metrics;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
 using System.Net.Http.Headers;
 
-namespace Coalesce.Http.Coalesce.Http.Caching;
+namespace Coalesce.Http.Caching;
 
 internal sealed partial class CachingMiddleware(IMemoryCache cache,
                                         ICacheKeyBuilder keyBuilder,
@@ -113,7 +113,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
             return;
         }
 
-        byte[] body = await response.Content.ReadAsByteArrayAsync(ct);
+        byte[] body = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
 
         response.Content = new ByteArrayContent(body);
 
@@ -189,7 +189,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
     {
         if (!IsRequestCacheable(request))
         {
-            return await base.SendAsync(request, ct);
+            return await base.SendAsync(request, ct).ConfigureAwait(false);
         }
 
         string key = keyBuilder.Build(request);
@@ -223,7 +223,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
         {
             metrics?.RecordRevalidation();
             LogRevalidation(key);
-            return await RevalidateAsync(key, entry, request, ct);
+            return await RevalidateAsync(key, entry, request, ct).ConfigureAwait(false);
         }
 
         // Cache miss (or stale without validator) — full request
@@ -233,7 +233,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
         HttpResponseMessage response;
         try
         {
-            response = await base.SendAsync(request, ct);
+            response = await base.SendAsync(request, ct).ConfigureAwait(false);
         }
         catch when (CanServeStaleOnError(entry))
         {
@@ -254,7 +254,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
         if (IsResponseCacheable(response))
         {
             LogCacheStore(key);
-            await StoreAsync(key, request, response, ct);
+            await StoreAsync(key, request, response, ct).ConfigureAwait(false);
         }
 
         return response;
@@ -318,7 +318,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
         HttpResponseMessage response;
         try
         {
-            response = await base.SendAsync(request, ct);
+            response = await base.SendAsync(request, ct).ConfigureAwait(false);
         }
         catch when (CanServeStaleOnError(entry))
         {
@@ -348,7 +348,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
 
         if (IsResponseCacheable(response))
         {
-            await StoreAsync(key, request, response, ct);
+            await StoreAsync(key, request, response, ct).ConfigureAwait(false);
         }
 
         return response;

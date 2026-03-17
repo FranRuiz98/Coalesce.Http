@@ -1,4 +1,4 @@
-using Coalesce.Http.Coalesce.Http.Extensions;
+using Coalesce.Http.Extensions;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Concurrent;

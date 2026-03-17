@@ -1,6 +1,6 @@
 using System.Diagnostics.Metrics;
 
-namespace Coalesce.Http.Coalesce.Http.Metrics;
+namespace Coalesce.Http.Metrics;
 
 /// <summary>
 /// Provides <see cref="Meter"/>-based instrumentation for Coalesce.Http.

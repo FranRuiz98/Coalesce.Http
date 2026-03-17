@@ -1,7 +1,7 @@
-using Coalesce.Http.Coalesce.Http.Caching;
-using Coalesce.Http.Coalesce.Http.Coalescing;
-using Coalesce.Http.Coalesce.Http.Metrics;
-using Coalesce.Http.Coalesce.Http.Options;
+using Coalesce.Http.Caching;
+using Coalesce.Http.Coalescing;
+using Coalesce.Http.Metrics;
+using Coalesce.Http.Options;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
 using System.Diagnostics.Metrics;

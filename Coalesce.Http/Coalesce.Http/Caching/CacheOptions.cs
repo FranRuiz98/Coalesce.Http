@@ -1,4 +1,4 @@
-﻿namespace Coalesce.Http.Coalesce.Http.Caching;
+﻿namespace Coalesce.Http.Caching;
 
 /// <summary>
 /// Provides configuration options for cache behavior, including the default time-to-live and maximum allowable body

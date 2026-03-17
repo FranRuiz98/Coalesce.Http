@@ -1,4 +1,4 @@
-using Coalesce.Http.Coalesce.Http.Caching;
+using Coalesce.Http.Caching;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
 using System.Net;

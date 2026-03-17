@@ -1,6 +1,6 @@
 ﻿using System.Net;
 
-namespace Coalesce.Http.Coalesce.Http.Coalescing;
+namespace Coalesce.Http.Coalescing;
 
 /// <summary>
 /// Represents a cached HTTP response, including status code, headers, and body content.

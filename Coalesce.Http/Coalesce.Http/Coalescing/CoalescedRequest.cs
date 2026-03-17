@@ -1,6 +1,6 @@
-﻿namespace Coalesce.Http.Coalesce.Http.Coalescing;
+﻿namespace Coalesce.Http.Coalescing;
 
-public sealed partial class RequestCoalescer
+internal sealed partial class RequestCoalescer
 {
     private sealed class CoalescedRequest
     {

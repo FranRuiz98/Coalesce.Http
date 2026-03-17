@@ -1,5 +1,5 @@
-using Coalesce.Http.Coalesce.Http.Coalescing;
-using Coalesce.Http.Coalesce.Http.Options;
+using Coalesce.Http.Coalescing;
+using Coalesce.Http.Options;
 using FluentAssertions;
 using System.Collections.Concurrent;
 using System.Diagnostics;

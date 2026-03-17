@@ -1,5 +1,5 @@
 using BenchmarkDotNet.Attributes;
-using Coalesce.Http.Coalesce.Http.Caching;
+using Coalesce.Http.Caching;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.VSDiagnostics;
 using System.Net;

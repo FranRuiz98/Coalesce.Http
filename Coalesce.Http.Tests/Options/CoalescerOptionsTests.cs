@@ -1,4 +1,4 @@
-using Coalesce.Http.Coalesce.Http.Options;
+using Coalesce.Http.Options;
 using FluentAssertions;
 
 namespace Coalesce.Http.Tests.Options;

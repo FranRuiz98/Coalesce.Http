@@ -1,4 +1,4 @@
-﻿namespace Coalesce.Http.Coalesce.Http.Caching;
+﻿namespace Coalesce.Http.Caching;
 
 public interface ICacheKeyBuilder
 {

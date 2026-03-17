@@ -1,6 +1,6 @@
-﻿namespace Coalesce.Http.Coalesce.Http.Coalescing;
+﻿namespace Coalesce.Http.Coalescing;
 
-public readonly record struct RequestKey(string Method, string Url)
+internal readonly record struct RequestKey(string Method, string Url)
 {
     public override string ToString()
     {
