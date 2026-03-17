@@ -101,16 +101,19 @@ public class PollyCompatibilityTests
         ServiceCollection services = new();
         _ = services
             .AddHttpClient("rule2")
-            // Negative TTL → cache entries are immediately stale → revalidation on every 2nd call.
-            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromSeconds(-10))
+            // 1 ms TTL → cache entries become stale almost immediately → revalidation on second call.
+            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromMilliseconds(1))
             .ConfigurePrimaryHttpMessageHandler(() => retryHandler);
 
         var client = services.BuildServiceProvider()
             .GetRequiredService<IHttpClientFactory>()
             .CreateClient("rule2");
 
-        // First request: cache miss → 200 with ETag stored (immediately stale).
+        // First request: cache miss → 200 with ETag stored (becomes stale within 1ms).
         _ = await client.GetAsync("https://api.test/item");
+
+        // Wait for the entry to become stale
+        await Task.Delay(10);
 
         // Second request: stale entry → CachingMiddleware.RevalidateAsync injects
         // If-None-Match → RetryOnceHandler fires attempt 1 (503) then retries (304 → refreshed cache).

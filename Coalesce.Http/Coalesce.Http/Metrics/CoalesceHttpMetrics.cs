@@ -15,6 +15,7 @@ namespace Coalesce.Http.Coalesce.Http.Metrics;
 ///   <item><term>coalesce_http.cache.stale_errors_served</term><description>Stale responses served under stale-if-error (RFC 5861).</description></item>
 ///   <item><term>coalesce_http.coalescing.deduplicated</term><description>Requests that reused an in-flight coalesced response.</description></item>
 ///   <item><term>coalesce_http.coalescing.inflight</term><description>Current number of in-flight coalesced requests at the origin.</description></item>
+///   <item><term>coalesce_http.coalescing.timeouts</term><description>Coalesced waiters that timed out and fell back to independent execution.</description></item>
 /// </list>
 /// <para>Register in DI via <c>AddCoalesceHttp</c> — the instance is resolved automatically.</para>
 /// </remarks>
@@ -30,11 +31,12 @@ public sealed class CoalesceHttpMetrics : IDisposable
     private readonly Counter<long> _staleErrorsServed;
     private readonly Counter<long> _coalescedDeduplicated;
     private readonly UpDownCounter<long> _coalescedInflight;
+    private readonly Counter<long> _coalescedTimeouts;
 
     /// <summary>Initialises a new instance of <see cref="CoalesceHttpMetrics"/> with the default meter name.</summary>
     public CoalesceHttpMetrics()
     {
-        _meter = new Meter(MeterName, "0.0.4");
+        _meter = new Meter(MeterName, "0.0.5");
 
         _cacheHits = _meter.CreateCounter<long>(
             "coalesce_http.cache.hits",
@@ -65,6 +67,11 @@ public sealed class CoalesceHttpMetrics : IDisposable
             "coalesce_http.coalescing.inflight",
             unit: "requests",
             description: "Current number of in-flight coalesced requests at the origin.");
+
+        _coalescedTimeouts = _meter.CreateCounter<long>(
+            "coalesce_http.coalescing.timeouts",
+            unit: "requests",
+            description: "Number of coalesced waiters that timed out and fell back to independent execution.");
     }
 
     internal void RecordCacheHit() => _cacheHits.Add(1);
@@ -74,6 +81,7 @@ public sealed class CoalesceHttpMetrics : IDisposable
     internal void RecordCoalescedDeduplicated() => _coalescedDeduplicated.Add(1);
     internal void IncrementInflight() => _coalescedInflight.Add(1);
     internal void DecrementInflight() => _coalescedInflight.Add(-1);
+    internal void RecordCoalescingTimeout() => _coalescedTimeouts.Add(1);
 
     /// <inheritdoc/>
     public void Dispose() => _meter.Dispose();

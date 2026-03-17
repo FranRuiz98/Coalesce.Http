@@ -188,7 +188,27 @@ public class HttpClientBuilderExtensionsTests
 
         Action act = () => builder.AddCoalesceHttp();
 
-        act.Should().Throw<NullReferenceException>();
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void AddCachingOnly_WithNullBuilder_Throws()
+    {
+        IHttpClientBuilder builder = null!;
+
+        Action act = () => builder.AddCachingOnly();
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void AddCoalescingOnly_WithNullBuilder_Throws()
+    {
+        IHttpClientBuilder builder = null!;
+
+        Action act = () => builder.AddCoalescingOnly();
+
+        act.Should().Throw<ArgumentNullException>();
     }
 
     private class TestHandler : HttpMessageHandler

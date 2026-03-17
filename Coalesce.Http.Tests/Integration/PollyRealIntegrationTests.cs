@@ -122,7 +122,7 @@ public class PollyRealIntegrationTests
         services.AddLogging();
         IHttpClientBuilder clientBuilder = services
             .AddHttpClient("polly-real-rule2")
-            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromSeconds(-10));
+            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromMilliseconds(1));
         clientBuilder.AddResilienceHandler("retry", b => b.AddRetry(new HttpRetryStrategyOptions
         {
             MaxRetryAttempts = 1,
@@ -135,8 +135,11 @@ public class PollyRealIntegrationTests
             .GetRequiredService<IHttpClientFactory>()
             .CreateClient("polly-real-rule2");
 
-        // First request: cache miss → 200 + ETag stored (immediately stale).
+        // First request: cache miss → 200 + ETag stored (becomes stale within 1ms).
         _ = await client.GetAsync("https://api.test/item");
+
+        // Wait for the entry to become stale
+        await Task.Delay(10);
 
         // Second request: stale entry → CachingMiddleware.RevalidateAsync injects If-None-Match
         // → Polly fires attempt 1 (503) then retries (304 → refreshed cache).

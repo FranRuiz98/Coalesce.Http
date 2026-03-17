@@ -22,11 +22,20 @@ internal sealed record CachedResponse(
     IReadOnlyList<KeyValuePair<string, IEnumerable<string>>> ContentHeaders
 )
 {
-    public static async Task<CachedResponse> FromResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken = default)
+    public static async Task<CachedResponse> FromResponseAsync(
+        HttpResponseMessage response,
+        long maxBodyBytes = long.MaxValue,
+        CancellationToken cancellationToken = default)
     {
         byte[] bodyBytes = response.Content is not null
             ? await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false)
             : [];
+
+        if (bodyBytes.Length > maxBodyBytes)
+        {
+            throw new InvalidOperationException(
+                $"Response body size ({bodyBytes.Length} bytes) exceeds the configured MaxResponseBodyBytes limit ({maxBodyBytes} bytes).");
+        }
 
         // RequestMessage is intentionally not cached. It is IDisposable, not thread-safe,
         // and sharing it across coalesced callers would cause subtle concurrency issues.

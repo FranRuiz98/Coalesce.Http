@@ -69,6 +69,8 @@ public static class HttpClientBuilderExtensions
         Action<CacheOptions>? configureCaching = null,
         Action<CoalescerOptions>? configureCoalescing = null)
     {
+        ArgumentNullException.ThrowIfNull(builder);
+
         builder.Services.TryAddSingleton<CoalesceHttpMetrics>();
 
         AddHttpCache(builder, configureCaching);
@@ -89,6 +91,8 @@ public static class HttpClientBuilderExtensions
         this IHttpClientBuilder builder,
         Action<CacheOptions>? configure = null)
     {
+        ArgumentNullException.ThrowIfNull(builder);
+
         builder.Services.TryAddSingleton<CoalesceHttpMetrics>();
         AddHttpCache(builder, configure);
 
@@ -104,6 +108,8 @@ public static class HttpClientBuilderExtensions
         this IHttpClientBuilder builder,
         Action<CoalescerOptions>? configure = null)
     {
+        ArgumentNullException.ThrowIfNull(builder);
+
         builder.Services.TryAddSingleton<CoalesceHttpMetrics>();
 
         CoalescerOptions options = new();

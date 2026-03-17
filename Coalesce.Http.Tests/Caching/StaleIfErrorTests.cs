@@ -232,7 +232,7 @@ public sealed class StaleIfErrorTests
         // Configure a 1-hour default stale-if-error window
         CacheOptions options = new()
         {
-            DefaultTtl = TimeSpan.FromSeconds(-1),  // entries become stale immediately
+            DefaultTtl = TimeSpan.FromMilliseconds(1),  // entries become stale almost immediately
             DefaultStaleIfErrorSeconds = 3600
         };
 
@@ -247,6 +247,9 @@ public sealed class StaleIfErrorTests
         HttpMessageInvoker invoker = Invoker(middleware);
 
         _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/default-sie"), CancellationToken.None);
+
+        // Wait for the entry to become stale
+        await Task.Delay(10);
 
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/default-sie"), CancellationToken.None);
 

@@ -287,4 +287,54 @@ public class RequestCoalescerTests
         response1.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
         response2.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
     }
+
+    [Fact]
+    public async Task ExecuteAsync_ResponseExceedsMaxBodyBytes_ThrowsInvalidOperationException()
+    {
+        // Arrange — set a tiny limit so that any non-empty response exceeds it
+        var options = new CoalescerOptions { MaxResponseBodyBytes = 5 };
+        var coalescer = new RequestCoalescer(options);
+        var key = new RequestKey("GET", "https://api.example.com/large");
+
+        Task<HttpResponseMessage> Factory()
+        {
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("this body is way too large")
+            });
+        }
+
+        // Act
+        Func<Task> act = () => coalescer.ExecuteAsync(key, Factory);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*MaxResponseBodyBytes*");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ResponseExceedsMaxBodyBytes_PropagatesExceptionToWaiters()
+    {
+        // Arrange
+        var options = new CoalescerOptions { MaxResponseBodyBytes = 5 };
+        var coalescer = new RequestCoalescer(options);
+        var key = new RequestKey("GET", "https://api.example.com/large");
+        var gate = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Launch winner + waiter
+        var t1 = coalescer.ExecuteAsync(key, () => gate.Task);
+        var t2 = coalescer.ExecuteAsync(key, () => gate.Task);
+
+        gate.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent("this body exceeds the limit")
+        });
+
+        // Both should receive the same exception
+        Func<Task> act1 = () => t1;
+        Func<Task> act2 = () => t2;
+
+        await act1.Should().ThrowAsync<InvalidOperationException>();
+        await act2.Should().ThrowAsync<InvalidOperationException>();
+    }
 }

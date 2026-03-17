@@ -7,6 +7,7 @@ using Microsoft.Extensions.Caching.Memory;
 using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 
 namespace Coalesce.Http.Tests.Metrics;
 
@@ -26,15 +27,22 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
     private long _staleErrorsServed;
     private long _coalescedDeduplicated;
     private long _coalescedInflight;
+    private long _coalescedTimeouts;
+
+    private static readonly FieldInfo MeterField =
+        typeof(CoalesceHttpMetrics).GetField("_meter", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     public CoalesceHttpMetricsTests()
     {
         _metrics = new CoalesceHttpMetrics();
 
+        // Resolve the exact Meter instance so the listener only tracks events from THIS test's metrics.
+        Meter ownMeter = (Meter)MeterField.GetValue(_metrics)!;
+
         _listener = new MeterListener();
         _listener.InstrumentPublished = (instrument, listener) =>
         {
-            if (instrument.Meter.Name == CoalesceHttpMetrics.MeterName)
+            if (ReferenceEquals(instrument.Meter, ownMeter))
             {
                 listener.EnableMeasurementEvents(instrument);
             }
@@ -50,6 +58,7 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
                 case "coalesce_http.cache.stale_errors_served": _staleErrorsServed += measurement; break;
                 case "coalesce_http.coalescing.deduplicated":   _coalescedDeduplicated += measurement; break;
                 case "coalesce_http.coalescing.inflight":       _coalescedInflight += measurement; break;
+                case "coalesce_http.coalescing.timeouts":       _coalescedTimeouts += measurement; break;
             }
         });
 
@@ -215,6 +224,45 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
         _listener.RecordObservableInstruments();
 
         _coalescedInflight.Should().Be(0, "inflight counter must return to zero after the request completes");
+    }
+
+    // ── Coalescing timeout ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CoalescingTimeout_RecordsTimeoutCounter()
+    {
+        var options = new CoalescerOptions { CoalescingTimeout = TimeSpan.FromMilliseconds(50) };
+        RequestCoalescer coalescer = new(options, _metrics);
+        RequestKey key = new("GET", "https://api.test/timeout-metric");
+
+        // The winner will never complete, causing the waiter to time out
+        TaskCompletionSource<HttpResponseMessage> gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Start the winner
+        Task<HttpResponseMessage> winner = coalescer.ExecuteAsync(key, () => gate.Task);
+
+        // Give the winner time to register as inflight
+        await Task.Delay(10);
+
+        // Start a waiter — it will time out and fall back to independent execution
+        Task<HttpResponseMessage> waiter = coalescer.ExecuteAsync(key, () =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([])
+            }));
+
+        using HttpResponseMessage waiterResponse = await waiter;
+
+        // Complete the winner so we don't leak
+        gate.SetResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent([])
+        });
+        using HttpResponseMessage winnerResponse = await winner;
+
+        _listener.RecordObservableInstruments();
+
+        _coalescedTimeouts.Should().Be(1, "the waiter timed out and fell back to independent execution");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

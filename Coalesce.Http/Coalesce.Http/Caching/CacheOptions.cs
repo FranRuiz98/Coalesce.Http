@@ -12,17 +12,34 @@ public sealed class CacheOptions
     /// <summary>
     /// Gets or sets the default time-to-live (TTL) duration for cache entries.
     /// </summary>
-    /// <remarks>The default TTL determines how long a cache entry remains valid before it is considered
-    /// expired. The default value is set to 30 seconds, but it can be adjusted as needed to optimize cache
-    /// performance.</remarks>
-    public TimeSpan DefaultTtl { get; set; } = TimeSpan.FromSeconds(30);
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is less than or equal to <see cref="TimeSpan.Zero"/>.</exception>
+    public TimeSpan DefaultTtl
+    {
+        get;
+        set
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "DefaultTtl must be positive.");
+            }
+
+            field = value;
+        }
+    } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Gets or sets the maximum allowable size, in bytes, for the body of a request.
+    /// Gets or sets the maximum allowable size, in bytes, for the body of a cached response.
     /// </summary>
-    /// <remarks>This property is useful for limiting the size of incoming requests to prevent excessive
-    /// resource usage. The default value is set to 1,048,576 bytes (1 MB).</remarks>
-    public long MaxBodySizeBytes { get; set; } = 1024 * 1024;
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
+    public long MaxBodySizeBytes
+    {
+        get;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            field = value;
+        }
+    } = 1024 * 1024;
 
     /// <summary>
     /// Gets or sets the default stale-if-error window in seconds (RFC 5861 §4).
@@ -30,5 +47,14 @@ public sealed class CacheOptions
     /// <remarks>When a cached response does not carry a <c>stale-if-error</c> directive, this value is
     /// used as the fallback. A value of <c>0</c> (the default) disables stale-if-error serving unless
     /// the origin explicitly includes the directive in its response.</remarks>
-    public long DefaultStaleIfErrorSeconds { get; set; } = 0;
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
+    public long DefaultStaleIfErrorSeconds
+    {
+        get;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            field = value;
+        }
+    }
 }
