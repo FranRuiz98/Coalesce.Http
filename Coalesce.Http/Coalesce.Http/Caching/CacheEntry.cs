@@ -11,7 +11,7 @@
 /// <param name="Headers">A read-only dictionary of HTTP headers associated with the cached response. Each key maps to an array of header
 /// values.</param>
 /// <param name="ExpiresAt">The date and time when the cached entry expires and is no longer valid.</param>
-internal sealed record CacheEntry
+public sealed record CacheEntry
 {
     /// <summary>HTTP status code of the stored response (RFC 9111 §3 — a cache MUST retain the status code as part of the stored response).</summary>
     public required int StatusCode { get; init; }

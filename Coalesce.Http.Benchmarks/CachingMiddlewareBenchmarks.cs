@@ -10,7 +10,7 @@ public class CachingMiddlewareBenchmarks
     private TestableHttpMessageHandler _innerHandler = null!;
     private HttpClient _client = null!;
     private CacheOptions _options = null!;
-    private IMemoryCache _cache = null!;
+    private ICacheStore _cache = null!;
     private DefaultCacheKeyBuilder _keyBuilder = null!;
     private readonly HttpRequestMessage _cachedRequest = null!;
     private readonly HttpRequestMessage _missRequest = null!;
@@ -21,8 +21,8 @@ public class CachingMiddlewareBenchmarks
         {
             DefaultTtl = TimeSpan.FromMinutes(5)
         };
-        IMemoryCache memoryCache = new MemoryCache(new MemoryCacheOptions());
-        _cache = memoryCache;
+        ICacheStore cacheStore = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
+        _cache = cacheStore;
         _keyBuilder = new DefaultCacheKeyBuilder();
         _innerHandler = new TestableHttpMessageHandler(() =>
         {

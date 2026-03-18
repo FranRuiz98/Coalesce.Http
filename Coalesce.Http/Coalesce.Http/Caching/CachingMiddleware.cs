@@ -1,5 +1,4 @@
 ﻿using Coalesce.Http.Metrics;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
@@ -7,7 +6,7 @@ using System.Net.Http.Headers;
 
 namespace Coalesce.Http.Caching;
 
-internal sealed partial class CachingMiddleware(IMemoryCache cache,
+internal sealed partial class CachingMiddleware(ICacheStore cache,
                                         ICacheKeyBuilder keyBuilder,
                                         CacheOptions options,
                                         CoalesceHttpMetrics? metrics = null,
@@ -148,7 +147,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
             StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options)
         };
 
-        _ = cache.Set(key, entry);
+        cache.Set(key, entry);
     }
 
     private static string[] ExtractVaryFields(HttpResponseMessage response)
@@ -194,7 +193,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
 
         string key = keyBuilder.Build(request);
 
-        _ = cache.TryGetValue(key, out CacheEntry? entry);
+        cache.TryGetValue(key, out CacheEntry? entry);
 
         // §4.1 — Vary: * means this response must never be served from cache
         if (entry is not null && IsVaryStar(entry))
@@ -362,7 +361,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
                 ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options),
                 StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options)
             };
-            _ = cache.Set(key, refreshed);
+            cache.Set(key, refreshed);
             metrics?.RecordCacheHit();
             return CreateResponse(refreshed);
         }

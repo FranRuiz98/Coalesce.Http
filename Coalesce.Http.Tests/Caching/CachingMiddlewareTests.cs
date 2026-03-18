@@ -8,13 +8,13 @@ namespace Coalesce.Http.Tests.Caching;
 
 public sealed class CachingMiddlewareTests
 {
-    private readonly IMemoryCache _cache;
+    private readonly ICacheStore _cache;
     private readonly DefaultCacheKeyBuilder _keyBuilder;
     private readonly CacheOptions _options;
 
     public CachingMiddlewareTests()
     {
-        _cache = new MemoryCache(new MemoryCacheOptions());
+        _cache = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
         _keyBuilder = new DefaultCacheKeyBuilder();
         _options = new CacheOptions { DefaultTtl = TimeSpan.FromMinutes(5) };
     }

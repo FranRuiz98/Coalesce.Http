@@ -13,12 +13,12 @@ namespace Coalesce.Http.Tests.Caching;
 /// </summary>
 public sealed class StaleIfErrorTests
 {
-    private readonly IMemoryCache _cache;
+    private readonly ICacheStore _cache;
     private readonly DefaultCacheKeyBuilder _keyBuilder;
 
     public StaleIfErrorTests()
     {
-        _cache = new MemoryCache(new MemoryCacheOptions());
+        _cache = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
         _keyBuilder = new DefaultCacheKeyBuilder();
     }
 

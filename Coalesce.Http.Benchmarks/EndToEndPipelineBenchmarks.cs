@@ -34,7 +34,7 @@ public class EndToEndPipelineBenchmarks
         };
 
         // ── Coalesce.Http pipeline: CachingMiddleware → CoalescingHandler → backend ──
-        IMemoryCache cache = new MemoryCache(new MemoryCacheOptions());
+        ICacheStore cache = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
         DefaultCacheKeyBuilder keyBuilder = new();
         CacheOptions cacheOptions = new() { DefaultTtl = TimeSpan.FromMinutes(5) };
         CoalescerOptions coalescerOptions = new();

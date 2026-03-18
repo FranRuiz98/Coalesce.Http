@@ -120,7 +120,7 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
     [Fact]
     public async Task Revalidation_RecordsCacheRevalidation()
     {
-        IMemoryCache cache = new MemoryCache(new MemoryCacheOptions());
+        ICacheStore cache = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
         DefaultCacheKeyBuilder keyBuilder = new();
         CacheOptions options = new() { DefaultTtl = TimeSpan.FromMinutes(5) };
 
@@ -272,11 +272,11 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
 
     private (CachingMiddleware, StubTransport) BuildPipeline(
         Func<HttpRequestMessage, HttpResponseMessage> handler,
-        IMemoryCache? cache = null,
+        ICacheStore? cache = null,
         DefaultCacheKeyBuilder? keyBuilder = null,
         CacheOptions? options = null)
     {
-        cache ??= new MemoryCache(new MemoryCacheOptions());
+        cache ??= new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
         keyBuilder ??= new DefaultCacheKeyBuilder();
         options ??= new CacheOptions { DefaultTtl = TimeSpan.FromMinutes(5) };
 

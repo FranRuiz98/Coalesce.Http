@@ -26,7 +26,7 @@ public class CachingValueBenchmarks
         };
 
         // ── Cached client: CachingMiddleware in front of the backend ──
-        IMemoryCache cache = new MemoryCache(new MemoryCacheOptions());
+        ICacheStore cache = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
         DefaultCacheKeyBuilder keyBuilder = new();
         CacheOptions options = new() { DefaultTtl = TimeSpan.FromMinutes(5) };
 

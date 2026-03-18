@@ -154,10 +154,11 @@ public static class HttpClientBuilderExtensions
 
         _ = builder.Services.AddMemoryCache();
         builder.Services.TryAddSingleton<ICacheKeyBuilder, DefaultCacheKeyBuilder>();
+        builder.Services.TryAddSingleton<ICacheStore, MemoryCacheStore>();
 
         _ = builder.AddHttpMessageHandler(sp =>
             new CachingMiddleware(
-                sp.GetRequiredService<IMemoryCache>(),
+                sp.GetRequiredService<ICacheStore>(),
                 sp.GetRequiredService<ICacheKeyBuilder>(),
                 options,
                 sp.GetService<CoalesceHttpMetrics>(),
