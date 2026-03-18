@@ -3,7 +3,8 @@ using Coalesce.Http.Coalescing;
 using Coalesce.Http.Options;
 using System.Net;
 
-[ShortRunJob]
+[MemoryDiagnoser]
+[MediumRunJob]
 public class CoalescingBenchmarks
 {
     private RequestCoalescer _coalescer = null!;

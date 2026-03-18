@@ -1,11 +1,10 @@
 using BenchmarkDotNet.Attributes;
 using Coalesce.Http.Caching;
 using Microsoft.Extensions.Caching.Memory;
-using Microsoft.VSDiagnostics;
 using System.Net;
 
-[ShortRunJob]
-[CPUUsageDiagnoser]
+[MemoryDiagnoser]
+[MediumRunJob]
 public class CachingMiddlewareBenchmarks
 {
     private TestableHttpMessageHandler _innerHandler = null!;

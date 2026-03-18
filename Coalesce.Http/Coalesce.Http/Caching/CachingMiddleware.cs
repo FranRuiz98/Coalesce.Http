@@ -94,7 +94,7 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
 
         // §5.1 — Age: elapsed seconds since the response was stored
         long ageSeconds = Math.Max(0L, (long)(DateTimeOffset.UtcNow - entry.StoredAt).TotalSeconds);
-        response.Headers.Age = TimeSpan.FromSeconds(ageSeconds);
+        response.Headers.Age = new TimeSpan(ageSeconds * TimeSpan.TicksPerSecond);
 
         return response;
     }
@@ -275,11 +275,32 @@ internal sealed partial class CachingMiddleware(IMemoryCache cache,
         {
             string[] stored = entry.VaryValues.TryGetValue(field, out string[]? v) ? v : [];
 
-            string[] current = request.Headers.TryGetValues(field, out IEnumerable<string>? cv)
-                ? [.. cv]
-                : [];
+            if (!request.Headers.TryGetValues(field, out IEnumerable<string>? currentValues))
+            {
+                // No current header values; stored must also be empty to match
+                if (stored.Length != 0)
+                {
+                    return false;
+                }
 
-            if (!stored.SequenceEqual(current, StringComparer.OrdinalIgnoreCase))
+                continue;
+            }
+
+            // Compare element-by-element without allocating an intermediate array
+            using IEnumerator<string> enumerator = currentValues.GetEnumerator();
+            int index = 0;
+            while (enumerator.MoveNext())
+            {
+                if (index >= stored.Length ||
+                    !string.Equals(stored[index], enumerator.Current, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                index++;
+            }
+
+            if (index != stored.Length)
             {
                 return false;
             }

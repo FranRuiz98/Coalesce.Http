@@ -1,4 +1,5 @@
 ﻿using System.Net;
+using System.Net.Http.Headers;
 
 namespace Coalesce.Http.Coalescing;
 
@@ -44,13 +45,37 @@ internal sealed record CachedResponse(
             Version: response.Version,
             ReasonPhrase: response.ReasonPhrase,
             BodyBytes: bodyBytes,
-            ResponseHeaders: response.Headers
-                .Select(h => KeyValuePair.Create(h.Key, h.Value))
-                .ToList(),
-            ContentHeaders: response.Content?.Headers
-                .Select(h => KeyValuePair.Create(h.Key, h.Value))
-                .ToList() ?? []
+            ResponseHeaders: MaterializeHeaders(response.Headers),
+            ContentHeaders: response.Content is not null
+                ? MaterializeHeaders(response.Content.Headers)
+                : []
         );
+    }
+
+    private static KeyValuePair<string, IEnumerable<string>>[] MaterializeHeaders(
+        HttpHeaders headers)
+    {
+        // Avoid LINQ allocations (.Select + delegate + List<T>); iterate once into a right-sized array.
+        // HttpHeaders implements IEnumerable but not ICollection, so we count first.
+        int count = 0;
+        foreach (KeyValuePair<string, IEnumerable<string>> _ in headers)
+        {
+            count++;
+        }
+
+        if (count == 0)
+        {
+            return [];
+        }
+
+        KeyValuePair<string, IEnumerable<string>>[] result = new KeyValuePair<string, IEnumerable<string>>[count];
+        int i = 0;
+        foreach (KeyValuePair<string, IEnumerable<string>> header in headers)
+        {
+            result[i++] = header;
+        }
+
+        return result;
     }
 
     public HttpResponseMessage ToHttpResponseMessage()

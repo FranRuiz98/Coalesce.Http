@@ -4,7 +4,7 @@
 
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
-[![Tests](https://img.shields.io/badge/tests-107%20passed-brightgreen)](#running-the-tests)
+[![Tests](https://img.shields.io/badge/tests-149%20passed-brightgreen)](#running-the-tests)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
 **Coalesce.Http** is a .NET library that extends the `HttpClient` pipeline to solve common problems in high-concurrency distributed systems:
@@ -258,7 +258,7 @@ The library has **no third-party dependencies**. It only references standard Mic
 dotnet test Coalesce.Http.Tests
 ```
 
-107 tests covering coalescing, caching, stale-if-error, metrics, Polly integration (retry + hedging), and response cloning.
+149 tests covering coalescing, caching, stale-if-error, metrics, Polly integration (retry + hedging), and response cloning.
 
 ---
 
@@ -270,6 +270,72 @@ dotnet run -c Release
 ```
 
 Benchmarks use [BenchmarkDotNet](https://benchmarkdotnet.org) and cover coalescing throughput at varying concurrency levels and cache hit/miss latency.
+
+---
+
+## Benchmark Results
+
+All benchmarks run with BenchmarkDotNet v0.15.2, .NET 10.0.5, MediumRunJob (15 iterations × 2 launches × 10 warmups).
+Environment: Windows 11 — 12th Gen Intel Core i7-12650H, 10 cores / 16 threads.
+
+### Request Coalescing — Backend Load Reduction
+
+Simulates a rate-limited backend (max 5 concurrent requests, 20 ms latency each).
+Without coalescing, N callers queue behind the bottleneck. With coalescing, **only 1 call is made** regardless of N.
+
+| Method | Concurrency | Mean | Ratio | Allocated |
+|---|---:|---:|---:|---:|
+| **No coalescing (N independent calls)** | **10** | **62.35 ms** | **1.00** | **3.42 KB** |
+| With coalescing (1 shared call) | 10 | 31.20 ms | 0.50 | 8.01 KB |
+| | | | | |
+| **No coalescing (N independent calls)** | **50** | **311.76 ms** | **1.00** | **17.80 KB** |
+| With coalescing (1 shared call) | 50 | 31.14 ms | 0.10 | 31.93 KB |
+| | | | | |
+| **No coalescing (N independent calls)** | **100** | **623.79 ms** | **1.00** | **35.77 KB** |
+| With coalescing (1 shared call) | 100 | 31.19 ms | 0.05 | 61.86 KB |
+
+> **100 concurrent requests → 20× faster.** The backend sees 1 request instead of 100.
+
+### Caching — Cache Hit vs Origin Round-Trip
+
+Isolates the caching layer to show the throughput difference between a cache hit and a real origin round-trip (10 ms simulated latency).
+
+| Method | Mean | Error | Ratio | Allocated |
+|---|---:|---:|---:|---:|
+| **No cache (origin round-trip)** | **15,591,147 ns** | **±39,617 ns** | **1.000** | **1.68 KB** |
+| Cache hit (served from memory) | 538 ns | ±8.62 ns | 0.000 | 1.75 KB |
+
+> **Cache hits are ~29,000× faster** — sub-microsecond response with near-zero overhead.
+
+### End-to-End Pipeline — Full Stack Comparison
+
+50 sequential GET requests to the same endpoint. The plain client hits the backend every time (10 ms latency). Coalesce.Http serves all 50 from cache after the first request.
+
+| Method | Mean | Error | Ratio | Allocated |
+|---|---:|---:|---:|---:|
+| **Plain HttpClient (no cache, no coalescing)** | **779,477 μs** | **±1,540 μs** | **1.000** | **88.77 KB** |
+| Coalesce.Http pipeline (cache hits) | 27.16 μs | ±0.22 μs | 0.000 | 84.77 KB |
+| Coalesce.Http concurrent burst | 28.46 μs | ±0.22 μs | 0.000 | 86.09 KB |
+
+> **50 requests in 27 μs vs 779 ms — over 28,000× faster.**
+
+### Caching Middleware — Micro-benchmarks
+
+| Method | Mean | Error | Allocated |
+|---|---:|---:|---:|
+| Cache Hit (GET served from cache) | 533 ns | ±2.41 ns | 1.74 KB |
+| Cache Miss (forwarded and stored) | 4,449 ns | ±203 ns | 3.98 KB |
+| Non-cacheable (POST bypass) | 506 ns | ±7.46 ns | 1.73 KB |
+
+### Coalescing — Micro-benchmarks
+
+| Method | Concurrency | Mean | Allocated |
+|---|---:|---:|---:|
+| Sequential requests (no coalescing) | 1 | 4,024 ns | 15.63 KB |
+| Concurrent coalesced into one call | 1 | 5,072 ns | 1.98 KB |
+| Sequential requests (no coalescing) | 100 | 4,103 ns | 15.63 KB |
+| Concurrent coalesced into one call | 100 | 40,169 ns | 55.24 KB |
+| Independent keys (no benefit) | 100 | 511 ns | 1.63 KB |
 
 ---
 

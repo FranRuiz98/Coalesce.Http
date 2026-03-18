@@ -9,6 +9,6 @@ internal readonly record struct RequestKey(string Method, string Url)
 
     public static RequestKey Create(HttpRequestMessage request)
     {
-        return new RequestKey(request.Method.Method, request.RequestUri!.ToString());
+        return new RequestKey(request.Method.Method, request.RequestUri!.AbsoluteUri);
     }
 }
