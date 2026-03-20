@@ -177,4 +177,62 @@ public sealed class FreshnessCalculatorTests
         // Negative value fails the >= 0 check, so falls back to default (0)
         result.Should().Be(0);
     }
+
+    // ── ExtractStaleWhileRevalidate ───────────────────────────────────────────
+
+    [Fact]
+    public void ExtractStaleWhileRevalidate_DirectivePresent_ReturnsValueFromHeader()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.OK);
+        response.Headers.CacheControl = CacheControlHeaderValue.Parse("max-age=60, stale-while-revalidate=120");
+
+        long result = FreshnessCalculator.ExtractStaleWhileRevalidate(response, _defaultOptions);
+
+        result.Should().Be(120);
+    }
+
+    [Fact]
+    public void ExtractStaleWhileRevalidate_DirectiveAbsent_ReturnsFallback()
+    {
+        var options = new CacheOptions { DefaultStaleWhileRevalidateSeconds = 300 };
+        using var response = new HttpResponseMessage(HttpStatusCode.OK);
+        response.Headers.CacheControl = new CacheControlHeaderValue { MaxAge = TimeSpan.FromSeconds(60) };
+
+        long result = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options);
+
+        result.Should().Be(300);
+    }
+
+    [Fact]
+    public void ExtractStaleWhileRevalidate_NoCacheControl_ReturnsFallback()
+    {
+        var options = new CacheOptions { DefaultStaleWhileRevalidateSeconds = 60 };
+        using var response = new HttpResponseMessage(HttpStatusCode.OK);
+
+        long result = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options);
+
+        result.Should().Be(60);
+    }
+
+    [Fact]
+    public void ExtractStaleWhileRevalidate_DefaultOptionsNoDirective_ReturnsZero()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.OK);
+
+        long result = FreshnessCalculator.ExtractStaleWhileRevalidate(response, _defaultOptions);
+
+        result.Should().Be(0);
+    }
+
+    [Fact]
+    public void ExtractStaleWhileRevalidate_NegativeValue_IgnoredReturnsFallback()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.OK);
+        response.Headers.CacheControl = CacheControlHeaderValue.Parse("max-age=60, stale-while-revalidate=-1");
+
+        long result = FreshnessCalculator.ExtractStaleWhileRevalidate(response, _defaultOptions);
+
+        // Negative value fails the >= 0 check, so falls back to default (0)
+        result.Should().Be(0);
+    }
 }

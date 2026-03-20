@@ -152,7 +152,13 @@ public static class HttpClientBuilderExtensions
         CacheOptions options = new();
         configure?.Invoke(options);
 
-        _ = builder.Services.AddMemoryCache();
+        builder.Services.AddMemoryCache(memoryOptions =>
+        {
+            if (options.MaxCacheSize is long sizeLimit)
+            {
+                memoryOptions.SizeLimit = sizeLimit;
+            }
+        });
         builder.Services.TryAddSingleton<ICacheKeyBuilder, DefaultCacheKeyBuilder>();
         builder.Services.TryAddSingleton<ICacheStore, MemoryCacheStore>();
 

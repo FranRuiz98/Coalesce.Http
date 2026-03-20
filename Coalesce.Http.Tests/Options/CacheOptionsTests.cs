@@ -84,4 +84,68 @@ public class CacheOptionsTests
         var act = () => options.DefaultStaleIfErrorSeconds = -1;
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    // ── DefaultStaleWhileRevalidateSeconds ────────────────────────────────────
+
+    [Fact]
+    public void DefaultStaleWhileRevalidateSeconds_DefaultIsZero()
+    {
+        var options = new CacheOptions();
+        options.DefaultStaleWhileRevalidateSeconds.Should().Be(0);
+    }
+
+    [Fact]
+    public void DefaultStaleWhileRevalidateSeconds_PositiveValue_IsAccepted()
+    {
+        var options = new CacheOptions { DefaultStaleWhileRevalidateSeconds = 120 };
+        options.DefaultStaleWhileRevalidateSeconds.Should().Be(120);
+    }
+
+    [Fact]
+    public void DefaultStaleWhileRevalidateSeconds_Negative_Throws()
+    {
+        var options = new CacheOptions();
+        var act = () => options.DefaultStaleWhileRevalidateSeconds = -1;
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    // ── MaxCacheSize ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public void MaxCacheSize_DefaultIsNull()
+    {
+        var options = new CacheOptions();
+        options.MaxCacheSize.Should().BeNull();
+    }
+
+    [Fact]
+    public void MaxCacheSize_PositiveValue_IsAccepted()
+    {
+        var options = new CacheOptions { MaxCacheSize = 10 * 1024 * 1024 };
+        options.MaxCacheSize.Should().Be(10 * 1024 * 1024);
+    }
+
+    [Fact]
+    public void MaxCacheSize_Zero_Throws()
+    {
+        var options = new CacheOptions();
+        var act = () => options.MaxCacheSize = 0;
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void MaxCacheSize_Negative_Throws()
+    {
+        var options = new CacheOptions();
+        var act = () => options.MaxCacheSize = -1;
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void MaxCacheSize_Null_IsAllowed()
+    {
+        var options = new CacheOptions { MaxCacheSize = 1024 };
+        options.MaxCacheSize = null;
+        options.MaxCacheSize.Should().BeNull();
+    }
 }

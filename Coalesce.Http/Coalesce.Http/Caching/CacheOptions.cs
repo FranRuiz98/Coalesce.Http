@@ -57,4 +57,42 @@ public sealed class CacheOptions
             field = value;
         }
     }
+
+    /// <summary>
+    /// Gets or sets the default stale-while-revalidate window in seconds (RFC 5861 §3).
+    /// </summary>
+    /// <remarks>When a cached response does not carry a <c>stale-while-revalidate</c> directive, this value is
+    /// used as the fallback. A value of <c>0</c> (the default) disables stale-while-revalidate serving unless
+    /// the origin explicitly includes the directive in its response.</remarks>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
+    public long DefaultStaleWhileRevalidateSeconds
+    {
+        get;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            field = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the maximum total size, in bytes, of all cached response bodies.
+    /// </summary>
+    /// <remarks>When set, the underlying <see cref="Microsoft.Extensions.Caching.Memory.IMemoryCache"/>
+    /// will evict least-recently-used entries once the limit is reached. Each entry's size is its
+    /// <see cref="CacheEntry.Body"/> length. A value of <c>null</c> (the default) means no limit.</remarks>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is less than or equal to zero.</exception>
+    public long? MaxCacheSize
+    {
+        get;
+        set
+        {
+            if (value is not null)
+            {
+                ArgumentOutOfRangeException.ThrowIfNegativeOrZero(value.Value);
+            }
+
+            field = value;
+        }
+    }
 }

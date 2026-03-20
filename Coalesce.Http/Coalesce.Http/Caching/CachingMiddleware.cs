@@ -1,6 +1,7 @@
 ﻿using Coalesce.Http.Metrics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 
@@ -13,6 +14,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                                         ILogger<CachingMiddleware>? logger = null) : DelegatingHandler
 {
     private readonly ILogger logger = logger ?? NullLogger<CachingMiddleware>.Instance;
+    private readonly ConcurrentDictionary<string, Task> _backgroundRevalidations = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Determines whether the specified HTTP request is eligible for caching based on its method, headers, and content.
@@ -144,7 +146,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             VaryFields = varyFields,
             VaryValues = varyValues,
             ExpiresAt = expiresAt,
-            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options)
+            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
+            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options)
         };
 
         cache.Set(key, entry);
@@ -152,7 +155,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
     private static string[] ExtractVaryFields(HttpResponseMessage response)
     {
-        return !response.Headers.Vary.Any() ? [] : [.. response.Headers.Vary];
+        return response.Headers.Vary.Count == 0 ? [] : [.. response.Headers.Vary];
     }
 
     private static Dictionary<string, string[]> CaptureVaryValues(HttpRequestMessage request, string[] varyFields)
@@ -193,7 +196,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         string key = keyBuilder.Build(request);
 
-        cache.TryGetValue(key, out CacheEntry? entry);
+        _ = cache.TryGetValue(key, out CacheEntry? entry);
 
         // §4.1 — Vary: * means this response must never be served from cache
         if (entry is not null && IsVaryStar(entry))
@@ -214,6 +217,15 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             metrics?.RecordCacheHit();
             LogCacheHit(key);
+            return CreateResponse(entry);
+        }
+
+        // RFC 5861 §3 — stale-while-revalidate: serve stale immediately, revalidate in background
+        if (entry is not null && !requestNoCache && CanServeStaleWhileRevalidate(entry))
+        {
+            metrics?.RecordStaleWhileRevalidateServed();
+            LogStaleWhileRevalidate(key);
+            ScheduleBackgroundRevalidation(key, entry, request);
             return CreateResponse(entry);
         }
 
@@ -359,7 +371,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             CacheEntry refreshed = entry with
             {
                 ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options),
-                StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options)
+                StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
+                StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options)
             };
             cache.Set(key, refreshed);
             metrics?.RecordCacheHit();
@@ -381,6 +394,72 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     private static bool CanServeStaleOnError(CacheEntry? entry)
     {
         return entry is not null && entry.StaleIfErrorSeconds > 0 && DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleIfErrorSeconds);
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the given entry is stale but within the
+    /// stale-while-revalidate window (RFC 5861 §3).
+    /// </summary>
+    private static bool CanServeStaleWhileRevalidate(CacheEntry entry)
+    {
+        return entry.StaleWhileRevalidateSeconds > 0
+            && entry.IsExpired()
+            && DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleWhileRevalidateSeconds);
+    }
+
+    /// <summary>
+    /// Schedules a fire-and-forget background revalidation for the given cache key.
+    /// Only one background revalidation per key runs at a time.
+    /// </summary>
+    private void ScheduleBackgroundRevalidation(string key, CacheEntry entry, HttpRequestMessage originalRequest)
+    {
+        _ = _backgroundRevalidations.GetOrAdd(key, k =>
+            Task.Run(async () =>
+            {
+                try
+                {
+                    HttpRequestMessage bgRequest = new(originalRequest.Method, originalRequest.RequestUri);
+                    foreach (KeyValuePair<string, IEnumerable<string>> header in originalRequest.Headers)
+                    {
+                        _ = bgRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    }
+
+                    if (entry.ETag is not null)
+                    {
+                        _ = bgRequest.Headers.Remove("If-None-Match");
+                        _ = bgRequest.Headers.TryAddWithoutValidation("If-None-Match", entry.ETag);
+                    }
+                    else if (entry.LastModified is DateTimeOffset lastModified)
+                    {
+                        bgRequest.Headers.IfModifiedSince = lastModified;
+                    }
+
+                    HttpResponseMessage response = await base.SendAsync(bgRequest, CancellationToken.None).ConfigureAwait(false);
+
+                    if (response.StatusCode == HttpStatusCode.NotModified)
+                    {
+                        CacheEntry refreshed = entry with
+                        {
+                            ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options),
+                            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
+                            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options)
+                        };
+                        cache.Set(key, refreshed);
+                    }
+                    else if (IsResponseCacheable(response))
+                    {
+                        await StoreAsync(key, bgRequest, response, CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogBackgroundRevalidationFailed(key, ex);
+                }
+                finally
+                {
+                    _ = _backgroundRevalidations.TryRemove(key, out _);
+                }
+            }));
     }
 
     /// <summary>
@@ -425,4 +504,10 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: storing response for {CacheKey}")]
     private partial void LogCacheStore(string cacheKey);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: serving stale-while-revalidate for {CacheKey}")]
+    private partial void LogStaleWhileRevalidate(string cacheKey);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Cache: background revalidation failed for {CacheKey}")]
+    private partial void LogBackgroundRevalidationFailed(string cacheKey, Exception exception);
 }

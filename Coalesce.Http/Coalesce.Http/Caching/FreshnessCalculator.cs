@@ -74,4 +74,36 @@ internal static class FreshnessCalculator
 
         return options.DefaultStaleIfErrorSeconds;
     }
+
+    /// <summary>
+    /// Extracts the effective <c>stale-while-revalidate</c> window in seconds from a response (RFC 5861 §3).
+    /// Falls back to <see cref="CacheOptions.DefaultStaleWhileRevalidateSeconds"/> when the directive is absent.
+    /// </summary>
+    /// <param name="response">The HTTP response message to inspect.</param>
+    /// <param name="options">The cache options providing the fallback value.</param>
+    /// <returns>
+    /// Seconds after <c>ExpiresAt</c> during which a stale entry may be served immediately while
+    /// a background revalidation is triggered, or <c>0</c> when stale-while-revalidate is disabled.
+    /// </returns>
+    public static long ExtractStaleWhileRevalidate(HttpResponseMessage response, CacheOptions options)
+    {
+        CacheControlHeaderValue? cc = response.Headers.CacheControl;
+
+        if (cc is not null)
+        {
+            foreach (NameValueHeaderValue ext in cc.Extensions)
+            {
+                if (ext.Name.Equals("stale-while-revalidate", StringComparison.OrdinalIgnoreCase))
+                {
+                    string? raw = ext.Value?.Trim('"');
+                    if (long.TryParse(raw, out long seconds) && seconds >= 0)
+                    {
+                        return seconds;
+                    }
+                }
+            }
+        }
+
+        return options.DefaultStaleWhileRevalidateSeconds;
+    }
 }

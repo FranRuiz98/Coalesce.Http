@@ -23,4 +23,10 @@ public interface ICacheStore
     /// <param name="key">The cache key under which to store the entry.</param>
     /// <param name="entry">The cache entry to store.</param>
     void Set(string key, CacheEntry entry);
+
+    /// <summary>
+    /// Removes the cache entry associated with the specified key.
+    /// </summary>
+    /// <param name="key">The cache key to remove.</param>
+    void Remove(string key);
 }
