@@ -191,7 +191,16 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     {
         if (!IsRequestCacheable(request))
         {
-            return await base.SendAsync(request, ct).ConfigureAwait(false);
+            HttpResponseMessage unsafeResponse = await base.SendAsync(request, ct).ConfigureAwait(false);
+
+            // RFC 9111 §4.4 — a successful response to an unsafe method invalidates
+            // the cached GET entry for the effective request URI (and Location / Content-Location).
+            if (IsUnsafeMethod(request.Method) && IsNonErrorResponse(unsafeResponse))
+            {
+                InvalidateForUnsafeMethod(request, unsafeResponse);
+            }
+
+            return unsafeResponse;
         }
 
         string key = keyBuilder.Build(request);
@@ -463,6 +472,79 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     }
 
     /// <summary>
+    /// Returns <see langword="true" /> for methods that are not safe (RFC 9110 §9.2.1).
+    /// Safe methods: GET, HEAD, OPTIONS, TRACE.
+    /// </summary>
+    private static bool IsUnsafeMethod(HttpMethod method)
+    {
+        return method != HttpMethod.Get
+            && method != HttpMethod.Head
+            && method != HttpMethod.Options
+            && method != HttpMethod.Trace;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true" /> when the response status code is non-error (1xx–3xx).
+    /// RFC 9111 §4.4 triggers invalidation only on non-error responses.
+    /// </summary>
+    private static bool IsNonErrorResponse(HttpResponseMessage response)
+    {
+        return (int)response.StatusCode < 400;
+    }
+
+    /// <summary>
+    /// Builds the cache key that would be used for a GET request to the given URI.
+    /// Used to invalidate the cached GET entry when an unsafe method succeeds (§4.4).
+    /// </summary>
+    private string BuildGetKey(Uri? uri)
+    {
+        using HttpRequestMessage synthetic = new(HttpMethod.Get, uri);
+        return keyBuilder.Build(synthetic);
+    }
+
+    /// <summary>
+    /// Invalidates cached entries affected by a successful unsafe method response (RFC 9111 §4.4).
+    /// Removes the effective request URI and, if present, the Location and Content-Location URIs.
+    /// </summary>
+    private void InvalidateForUnsafeMethod(HttpRequestMessage request, HttpResponseMessage response)
+    {
+        // §4.4 MUST — effective request URI
+        string effectiveKey = BuildGetKey(request.RequestUri);
+        if (cache.TryGetValue(effectiveKey, out _))
+        {
+            cache.Remove(effectiveKey);
+            metrics?.RecordCacheInvalidation();
+            LogCacheInvalidation(effectiveKey, request.Method.Method);
+        }
+
+        // §4.4 MAY — Location header
+        if (response.Headers.Location is Uri location && location != request.RequestUri)
+        {
+            string locationKey = BuildGetKey(location);
+            if (cache.TryGetValue(locationKey, out _))
+            {
+                cache.Remove(locationKey);
+                metrics?.RecordCacheInvalidation();
+                LogCacheInvalidation(locationKey, request.Method.Method);
+            }
+        }
+
+        // §4.4 MAY — Content-Location header
+        if (response.Content?.Headers.ContentLocation is Uri contentLocation
+            && contentLocation != request.RequestUri
+            && contentLocation != response.Headers.Location)
+        {
+            string contentLocationKey = BuildGetKey(contentLocation);
+            if (cache.TryGetValue(contentLocationKey, out _))
+            {
+                cache.Remove(contentLocationKey);
+                metrics?.RecordCacheInvalidation();
+                LogCacheInvalidation(contentLocationKey, request.Method.Method);
+            }
+        }
+    }
+
+    /// <summary>
     /// Extracts all headers from the specified HTTP response, including both response and content headers.
     /// </summary>
     /// <remarks>Header names are compared using a case-insensitive ordinal comparer. Content headers are
@@ -510,4 +592,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Cache: background revalidation failed for {CacheKey}")]
     private partial void LogBackgroundRevalidationFailed(string cacheKey, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cache: invalidated {CacheKey} after successful {HttpMethod} request (RFC 9111 §4.4)")]
+    private partial void LogCacheInvalidation(string cacheKey, string httpMethod);
 }

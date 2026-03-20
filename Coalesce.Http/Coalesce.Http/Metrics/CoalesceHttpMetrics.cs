@@ -14,6 +14,7 @@ namespace Coalesce.Http.Metrics;
 ///   <item><term>coalesce_http.cache.revalidations</term><description>Conditional revalidation requests (If-None-Match / If-Modified-Since).</description></item>
 ///   <item><term>coalesce_http.cache.stale_errors_served</term><description>Stale responses served under stale-if-error (RFC 5861).</description></item>
 ///   <item><term>coalesce_http.cache.stale_while_revalidate_served</term><description>Stale responses served immediately while a background revalidation was triggered (RFC 5861).</description></item>
+///   <item><term>coalesce_http.cache.invalidations</term><description>Cache entries invalidated by successful unsafe method responses (RFC 9111 §4.4).</description></item>
 ///   <item><term>coalesce_http.coalescing.deduplicated</term><description>Requests that reused an in-flight coalesced response.</description></item>
 ///   <item><term>coalesce_http.coalescing.inflight</term><description>Current number of in-flight coalesced requests at the origin.</description></item>
 ///   <item><term>coalesce_http.coalescing.timeouts</term><description>Coalesced waiters that timed out and fell back to independent execution.</description></item>
@@ -31,6 +32,7 @@ public sealed class CoalesceHttpMetrics : IDisposable
     private readonly Counter<long> _cacheRevalidations;
     private readonly Counter<long> _staleErrorsServed;
     private readonly Counter<long> _staleWhileRevalidateServed;
+    private readonly Counter<long> _cacheInvalidations;
     private readonly Counter<long> _coalescedDeduplicated;
     private readonly UpDownCounter<long> _coalescedInflight;
     private readonly Counter<long> _coalescedTimeouts;
@@ -65,6 +67,11 @@ public sealed class CoalesceHttpMetrics : IDisposable
             unit: "requests",
             description: "Number of stale responses served immediately while a background revalidation was triggered (RFC 5861 §3).");
 
+        _cacheInvalidations = _meter.CreateCounter<long>(
+            "coalesce_http.cache.invalidations",
+            unit: "entries",
+            description: "Number of cache entries invalidated by successful unsafe method responses (RFC 9111 §4.4).");
+
         _coalescedDeduplicated = _meter.CreateCounter<long>(
             "coalesce_http.coalescing.deduplicated",
             unit: "requests",
@@ -86,6 +93,7 @@ public sealed class CoalesceHttpMetrics : IDisposable
     internal void RecordRevalidation() => _cacheRevalidations.Add(1);
     internal void RecordStaleErrorServed() => _staleErrorsServed.Add(1);
     internal void RecordStaleWhileRevalidateServed() => _staleWhileRevalidateServed.Add(1);
+    internal void RecordCacheInvalidation() => _cacheInvalidations.Add(1);
     internal void RecordCoalescedDeduplicated() => _coalescedDeduplicated.Add(1);
     internal void IncrementInflight() => _coalescedInflight.Add(1);
     internal void DecrementInflight() => _coalescedInflight.Add(-1);
