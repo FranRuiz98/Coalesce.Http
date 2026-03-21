@@ -97,13 +97,52 @@ public class CoalescingHandlerTests
         responses.Should().HaveCount(3);
     }
 
+    [Fact]
+    public async Task SendAsync_WithHeadRequest_ShouldCoalesce()
+    {
+        // Arrange
+        var url = "https://api.example.com/data";
+        var invoker = new HttpMessageInvoker(_handler);
+
+        _innerHandler.Delay = TimeSpan.FromMilliseconds(100);
+
+        // Act
+        var task1 = invoker.SendAsync(new HttpRequestMessage(HttpMethod.Head, url), CancellationToken.None);
+        var task2 = invoker.SendAsync(new HttpRequestMessage(HttpMethod.Head, url), CancellationToken.None);
+
+        var responses = await Task.WhenAll(task1, task2);
+
+        // Assert
+        _innerHandler.CallCount.Should().Be(1, "concurrent HEAD requests to the same URL should coalesce");
+        responses.Should().HaveCount(2);
+        responses.Should().OnlyContain(r => r.StatusCode == System.Net.HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task SendAsync_HeadAndGet_ShouldNotCoalesce()
+    {
+        // Arrange — HEAD and GET to the same URL are different coalescing keys
+        var url = "https://api.example.com/data";
+        var invoker = new HttpMessageInvoker(_handler);
+
+        _innerHandler.Delay = TimeSpan.FromMilliseconds(100);
+
+        // Act
+        var task1 = invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, url), CancellationToken.None);
+        var task2 = invoker.SendAsync(new HttpRequestMessage(HttpMethod.Head, url), CancellationToken.None);
+
+        var responses = await Task.WhenAll(task1, task2);
+
+        // Assert
+        _innerHandler.CallCount.Should().Be(2, "GET and HEAD are different methods and should not coalesce");
+    }
+
     [Theory]
     [InlineData("PUT")]
     [InlineData("DELETE")]
     [InlineData("PATCH")]
-    [InlineData("HEAD")]
     [InlineData("OPTIONS")]
-    public async Task SendAsync_WithNonGetRequest_ShouldNotCoalesce(string method)
+    public async Task SendAsync_WithUnsafeOrNonIdempotentRequest_ShouldNotCoalesce(string method)
     {
         // Arrange
         var request = new HttpRequestMessage(new HttpMethod(method), "https://api.example.com/data");
