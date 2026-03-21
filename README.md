@@ -488,6 +488,9 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### v1.0.1
+- **Multi-targeting** — added .NET 8.0 support alongside .NET 10.0; minimum requirement is now .NET 8.0 or later
+
 ### v0.0.6
 - **Per-request coalescing policy** — `CoalescingRequestPolicy.BypassCoalescing` via `HttpRequestMessage.Options`; opt out of deduplication on individual requests
 - **HEAD request coalescing** — concurrent identical HEAD requests are now coalesced (GET and HEAD use separate coalescing keys)
