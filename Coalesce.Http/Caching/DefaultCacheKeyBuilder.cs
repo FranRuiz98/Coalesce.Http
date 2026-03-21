@@ -1,7 +1,11 @@
 ﻿namespace Coalesce.Http.Caching;
 
+/// <summary>
+/// Default <see cref="ICacheKeyBuilder"/> implementation that produces keys in the form <c>METHOD:absoluteUri</c>.
+/// </summary>
 public sealed class DefaultCacheKeyBuilder : ICacheKeyBuilder
 {
+    /// <inheritdoc/>
     public string Build(HttpRequestMessage request)
     {
         string method = request.Method.Method;

@@ -388,7 +388,7 @@ The library has **no third-party dependencies**. It only references standard Mic
 dotnet test Coalesce.Http.Tests
 ```
 
-203 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, metrics, Polly integration (retry + hedging), and response cloning.
+209 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, per-request coalescing policy, metrics, Polly integration (retry + hedging), and response cloning.
 
 ---
 

@@ -1,7 +1,14 @@
 ﻿namespace Coalesce.Http.Options;
 
+/// <summary>
+/// Provides configuration options for the request coalescing layer.
+/// </summary>
 public sealed class CoalescerOptions
 {
+    /// <summary>
+    /// Gets or sets a value indicating whether request coalescing is enabled.
+    /// Set to <see langword="false"/> to disable coalescing (useful for debugging). Default is <see langword="true"/>.
+    /// </summary>
     public bool Enabled { get; set; } = true;
 
     private TimeSpan? _coalescingTimeout;

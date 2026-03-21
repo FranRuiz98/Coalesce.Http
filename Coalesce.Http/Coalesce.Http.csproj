@@ -4,8 +4,18 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.0.5</Version>
-    <PackageVersion>0.0.5</PackageVersion>
+    <Version>1.0.0</Version>
+    <PackageVersion>1.0.0</PackageVersion>
+    <Authors>FranRuiz98</Authors>
+    <Description>Advanced HTTP pipeline extensions for .NET — request coalescing, RFC 9111 caching, and seamless Polly integration.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/FranRuiz98/Coalesce.Http</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/FranRuiz98/Coalesce.Http</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>http;caching;coalescing;rfc9111;rfc5861;httpclient;polly;deduplication;request-coalescing</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Copyright>Copyright (c) FranRuiz98</Copyright>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,6 +32,10 @@
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>
