@@ -78,8 +78,11 @@ internal sealed partial class RequestCoalescer(CoalescerOptions options, Coalesc
 
                 // Cache the response for other waiters. We read the entire response into memory to allow cloning for multiple callers.
                 // Solves the problem of HttpResponseMessage being a one-time-use object that can't be shared across multiple callers.
+                // CancellationToken.None is intentional: the winner's individual token must not
+                // poison the shared TCS — if body reading were cancelled here, the OperationCanceledException
+                // would propagate to ALL waiters via SetException, even though their tokens were not cancelled.
                 CachedResponse cachedResponse = await CachedResponse
-                    .FromResponseAsync(response, options.MaxResponseBodyBytes, cancellationToken)
+                    .FromResponseAsync(response, options.MaxResponseBodyBytes, CancellationToken.None)
                     .ConfigureAwait(false);
 
                 coalescedRequest.Tcs.SetResult(cachedResponse);

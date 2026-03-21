@@ -4,7 +4,7 @@
 
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
-[![Tests](https://img.shields.io/badge/tests-208%20passed-brightgreen)](#running-the-tests)
+[![Tests](https://img.shields.io/badge/tests-209%20passed-brightgreen)](#running-the-tests)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
 **Coalesce.Http** is a .NET library that extends the `HttpClient` pipeline to solve common problems in high-concurrency distributed systems:
@@ -490,6 +490,7 @@ MIT — see [LICENSE](LICENSE).
 ### v0.0.6
 - **Per-request coalescing policy** — `CoalescingRequestPolicy.BypassCoalescing` via `HttpRequestMessage.Options`; opt out of deduplication on individual requests
 - **HEAD request coalescing** — concurrent identical HEAD requests are now coalesced (GET and HEAD use separate coalescing keys)
+- **Fix: winner cancellation no longer poisons waiters** — if the winner's `CancellationToken` fires during body reading, the `OperationCanceledException` no longer propagates to all coalesced waiters via the shared `TaskCompletionSource`
 
 ### v0.0.5
 - **Per-request cache policy** — `CacheRequestPolicy.BypassCache`, `ForceRevalidate`, `NoStore` via `HttpRequestMessage.Options`

@@ -289,6 +289,42 @@ public class RequestCoalescerTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WinnerCancellation_DoesNotPoisonWaiters()
+    {
+        // Arrange — the winner's CancellationToken is cancelled before the factory completes,
+        // but other waiters should still receive the successful response.
+        var coalescer = new RequestCoalescer(new CoalescerOptions());
+        var key = new RequestKey("GET", "https://api.example.com/data");
+        var tcs = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var winnerCts = new CancellationTokenSource();
+        Task<HttpResponseMessage> Factory() => tcs.Task;
+
+        // Act — winner attaches first with a cancellable token
+        var winnerTask = coalescer.ExecuteAsync(key, Factory, winnerCts.Token);
+        var waiterTask = coalescer.ExecuteAsync(key, Factory, CancellationToken.None);
+
+        // Cancel the winner before the factory resolves
+        winnerCts.Cancel();
+
+        // Resolve the factory — body reading happens after cancellation
+        tcs.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent("payload")
+        });
+
+        // Assert — the waiter must succeed even though the winner's token was cancelled
+        var waiterResponse = await waiterTask;
+        waiterResponse.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        string body = await waiterResponse.Content.ReadAsStringAsync();
+        body.Should().Be("payload");
+
+        // The winner itself may throw OperationCanceledException or succeed depending on timing,
+        // but it must NOT propagate cancellation to the shared TCS.
+        // We verify the waiter was not affected — that is the critical invariant.
+    }
+
+    [Fact]
     public async Task ExecuteAsync_ResponseExceedsMaxBodyBytes_ThrowsInvalidOperationException()
     {
         // Arrange — set a tiny limit so that any non-empty response exceeds it
