@@ -147,7 +147,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             VaryValues = varyValues,
             ExpiresAt = expiresAt,
             StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
-            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options)
+            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
+            MustRevalidate = cc?.MustRevalidate == true || cc?.ProxyRevalidate == true
         };
 
         cache.Set(key, entry);
@@ -381,7 +382,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             {
                 ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options),
                 StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
-                StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options)
+                StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
+                MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
             };
             cache.Set(key, refreshed);
             metrics?.RecordCacheHit();
@@ -402,7 +404,10 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// </summary>
     private static bool CanServeStaleOnError(CacheEntry? entry)
     {
-        return entry is not null && entry.StaleIfErrorSeconds > 0 && DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleIfErrorSeconds);
+        return entry is not null
+            && !entry.MustRevalidate
+            && entry.StaleIfErrorSeconds > 0
+            && DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleIfErrorSeconds);
     }
 
     /// <summary>
@@ -411,7 +416,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// </summary>
     private static bool CanServeStaleWhileRevalidate(CacheEntry entry)
     {
-        return entry.StaleWhileRevalidateSeconds > 0
+        return !entry.MustRevalidate
+            && entry.StaleWhileRevalidateSeconds > 0
             && entry.IsExpired()
             && DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleWhileRevalidateSeconds);
     }
@@ -451,7 +457,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                         {
                             ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options),
                             StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
-                            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options)
+                            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
+                            MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
                         };
                         cache.Set(key, refreshed);
                     }

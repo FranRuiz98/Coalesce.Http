@@ -46,6 +46,9 @@ public sealed record CacheEntry
     /// <summary>Number of seconds after <see cref="ExpiresAt"/> during which a stale response may be served immediately while a background revalidation is triggered (RFC 5861 §3). Zero means the directive is absent.</summary>
     public long StaleWhileRevalidateSeconds { get; init; }
 
+    /// <summary>When <see langword="true"/>, the origin included <c>must-revalidate</c> or <c>proxy-revalidate</c> (RFC 9111 §5.2.2.2), prohibiting the cache from serving a stale response without successful revalidation.</summary>
+    public bool MustRevalidate { get; init; }
+
     /// <summary>
     /// Determines whether the cache entry has expired based on its expiration time.
     /// </summary>
