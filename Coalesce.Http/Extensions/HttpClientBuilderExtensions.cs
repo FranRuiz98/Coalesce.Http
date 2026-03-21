@@ -125,7 +125,11 @@ public static class HttpClientBuilderExtensions
         // duplicate AddCoalesceHttp() calls produce independent coalescing scopes
         // and don't deadlock through shared inflight state.
         RequestCoalescer? coalescer = null;
+#if NET9_0_OR_GREATER
         Lock coalescerLock = new();
+#else
+        object coalescerLock = new();
+#endif
 
         _ = builder.AddHttpMessageHandler(sp =>
         {

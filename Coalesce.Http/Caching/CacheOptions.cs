@@ -9,13 +9,19 @@
 /// These settings can be tuned to optimize performance and resource usage based on application requirements.</remarks>
 public sealed class CacheOptions
 {
+    private TimeSpan _defaultTtl = TimeSpan.FromSeconds(30);
+    private long _maxBodySizeBytes = 1024 * 1024;
+    private long _defaultStaleIfErrorSeconds;
+    private long _defaultStaleWhileRevalidateSeconds;
+    private long? _maxCacheSize;
+
     /// <summary>
     /// Gets or sets the default time-to-live (TTL) duration for cache entries.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is less than or equal to <see cref="TimeSpan.Zero"/>.</exception>
     public TimeSpan DefaultTtl
     {
-        get;
+        get => _defaultTtl;
         set
         {
             if (value <= TimeSpan.Zero)
@@ -23,9 +29,9 @@ public sealed class CacheOptions
                 throw new ArgumentOutOfRangeException(nameof(value), value, "DefaultTtl must be positive.");
             }
 
-            field = value;
+            _defaultTtl = value;
         }
-    } = TimeSpan.FromSeconds(30);
+    }
 
     /// <summary>
     /// Gets or sets the maximum allowable size, in bytes, for the body of a cached response.
@@ -33,13 +39,13 @@ public sealed class CacheOptions
     /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
     public long MaxBodySizeBytes
     {
-        get;
+        get => _maxBodySizeBytes;
         set
         {
             ArgumentOutOfRangeException.ThrowIfNegative(value);
-            field = value;
+            _maxBodySizeBytes = value;
         }
-    } = 1024 * 1024;
+    }
 
     /// <summary>
     /// Gets or sets the default stale-if-error window in seconds (RFC 5861 §4).
@@ -50,11 +56,11 @@ public sealed class CacheOptions
     /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
     public long DefaultStaleIfErrorSeconds
     {
-        get;
+        get => _defaultStaleIfErrorSeconds;
         set
         {
             ArgumentOutOfRangeException.ThrowIfNegative(value);
-            field = value;
+            _defaultStaleIfErrorSeconds = value;
         }
     }
 
@@ -67,11 +73,11 @@ public sealed class CacheOptions
     /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
     public long DefaultStaleWhileRevalidateSeconds
     {
-        get;
+        get => _defaultStaleWhileRevalidateSeconds;
         set
         {
             ArgumentOutOfRangeException.ThrowIfNegative(value);
-            field = value;
+            _defaultStaleWhileRevalidateSeconds = value;
         }
     }
 
@@ -84,7 +90,7 @@ public sealed class CacheOptions
     /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is less than or equal to zero.</exception>
     public long? MaxCacheSize
     {
-        get;
+        get => _maxCacheSize;
         set
         {
             if (value is not null)
@@ -92,7 +98,7 @@ public sealed class CacheOptions
                 ArgumentOutOfRangeException.ThrowIfNegativeOrZero(value.Value);
             }
 
-            field = value;
+            _maxCacheSize = value;
         }
     }
 }

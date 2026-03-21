@@ -2,7 +2,7 @@
 
 > Advanced HTTP pipeline extensions for .NET — request coalescing, RFC 9111 caching, and seamless Polly integration.
 
-[![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
+[![.NET](https://img.shields.io/badge/.NET-8.0%20%7C%2010.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
 [![Tests](https://img.shields.io/badge/tests-209%20passed-brightgreen)](#running-the-tests)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
@@ -50,7 +50,7 @@ Coalesce.Http does **not** replace `HttpClient` or Polly. It is a thin, composab
 dotnet add package Coalesce.Http
 ```
 
-> **Requirements:** .NET 10.0 or later. No third-party dependencies — only `Microsoft.Extensions.*`.
+> **Requirements:** .NET 8.0 or later. No third-party dependencies — only `Microsoft.Extensions.*`.
 
 ---
 
@@ -473,7 +473,7 @@ Isolates the caching layer to show the throughput difference between a cache hit
 
 Contributions are welcome. Please open an issue before submitting a pull request for significant changes.
 
-- Follow the existing code style (C# 14, `async/await` for I/O, nullable enabled)
+- Follow the existing code style (C# 12+; C# 14 features only inside `#if NET9_0_OR_GREATER` / `#if NET10_0_OR_GREATER` guards, `async/await` for I/O, nullable enabled)
 - Add or update unit tests for any new logic
 - Keep compiler warnings at zero
 
