@@ -190,6 +190,12 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// be served from cache or obtained from the base handler.</returns>
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        // Per-request policy: bypass the cache entirely (no read, no write, no invalidation)
+        if (request.Options.TryGetValue(CacheRequestPolicy.BypassCache, out bool bypass) && bypass)
+        {
+            return await base.SendAsync(request, ct).ConfigureAwait(false);
+        }
+
         if (!IsRequestCacheable(request))
         {
             HttpResponseMessage unsafeResponse = await base.SendAsync(request, ct).ConfigureAwait(false);
@@ -220,7 +226,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             entry = null;
         }
 
-        bool requestNoCache = request.Headers.CacheControl?.NoCache == true;
+        bool requestNoCache = request.Headers.CacheControl?.NoCache == true
+            || (request.Options.TryGetValue(CacheRequestPolicy.ForceRevalidate, out bool forceRevalidate) && forceRevalidate);
 
         // Fresh cache hit — skip if client demands revalidation (§5.2.1.4)
         if (entry is not null && !entry.IsExpired() && !requestNoCache)
@@ -272,7 +279,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return CreateResponse(entry);
         }
 
-        if (IsResponseCacheable(response))
+        bool noStore = request.Options.TryGetValue(CacheRequestPolicy.NoStore, out bool ns) && ns;
+
+        if (!noStore && IsResponseCacheable(response))
         {
             LogCacheStore(key);
             await StoreAsync(key, request, response, ct).ConfigureAwait(false);
@@ -390,7 +399,10 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return CreateResponse(refreshed);
         }
 
-        if (IsResponseCacheable(response))
+        // Per-request NoStore: allow 304 TTL refresh (above) but block storing a new response
+        bool noStore = request.Options.TryGetValue(CacheRequestPolicy.NoStore, out bool ns) && ns;
+
+        if (!noStore && IsResponseCacheable(response))
         {
             await StoreAsync(key, request, response, ct).ConfigureAwait(false);
         }
