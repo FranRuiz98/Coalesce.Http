@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Coalesce.Http.Benchmarks/Coalesce.Http.Benchmarks.csproj" />
+  <Project Path="Coalesce.Http.Demo/Coalesce.Http.Demo.csproj" />
   <Project Path="Coalesce.Http.Tests/Coalesce.Http.Tests.csproj" />
   <Project Path="Coalesce.Http/Coalesce.Http.csproj" />
 </Solution>
