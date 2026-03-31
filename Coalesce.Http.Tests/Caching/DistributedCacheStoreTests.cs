@@ -223,6 +223,51 @@ public sealed class DistributedCacheStoreTests
         found.Should().BeFalse("the entry TTL has elapsed");
     }
 
+    [Fact]
+    public async Task Set_WithStaleWindow_EntrySurvivesBeyondExpiresAt()
+    {
+        // Entry expires in 50 ms but has a 10-second stale-if-error window.
+        // The backing store TTL must be extended so the entry is still available
+        // for stale serving after ExpiresAt elapses.
+        IDistributedCache cache = new MemoryDistributedCache(
+            Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions()));
+        DistributedCacheStore store = new(cache);
+
+        CacheEntry entry = BuildEntry(
+            expiresAt: DateTimeOffset.UtcNow.AddMilliseconds(50),
+            staleIfError: 10);
+
+        store.Set("stale-key", entry);
+
+        // Wait for ExpiresAt to pass
+        await Task.Delay(200);
+
+        // Entry should still be present because the backing store TTL includes the stale window
+        bool found = store.TryGetValue("stale-key", out CacheEntry? restored);
+        found.Should().BeTrue("the stale-if-error window extends the backing store TTL beyond ExpiresAt");
+        restored.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Set_WithStaleWhileRevalidateWindow_EntrySurvivesBeyondExpiresAt()
+    {
+        IDistributedCache cache = new MemoryDistributedCache(
+            Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions()));
+        DistributedCacheStore store = new(cache);
+
+        CacheEntry entry = BuildEntry(
+            expiresAt: DateTimeOffset.UtcNow.AddMilliseconds(50),
+            staleWhileRevalidate: 10);
+
+        store.Set("swr-key", entry);
+
+        await Task.Delay(200);
+
+        bool found = store.TryGetValue("swr-key", out CacheEntry? restored);
+        found.Should().BeTrue("the stale-while-revalidate window extends the backing store TTL beyond ExpiresAt");
+        restored.Should().NotBeNull();
+    }
+
     // ── Isolation ────────────────────────────────────────────────────────────
 
     [Fact]

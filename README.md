@@ -5,7 +5,8 @@
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
-[![Tests](https://img.shields.io/badge/tests-209%20passed-brightgreen)](#running-the-tests)
+[![Tests](https://img.shields.io/badge/tests-226%20passed-brightgreen)](#running-the-tests)
+[![NuGet](https://img.shields.io/badge/version-1.0.4-blue)](#changelog)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
 **Coalesce.Http** is a .NET library that extends the `HttpClient` pipeline to solve common problems in high-concurrency distributed systems:
@@ -258,7 +259,7 @@ You can also call `ICacheStore.Remove` directly at any time to evict a specific 
 
 For multi-instance deployments (Kubernetes, App Service scale-out, etc.) replace the default in-memory store with a `IDistributedCache`-backed implementation by calling `UseDistributedCacheStore()` **after** `AddCoalesceHttp()`.
 
-`CacheEntry` objects are serialized to JSON and stored as UTF-8 bytes. The `AbsoluteExpiration` is set to `CacheEntry.ExpiresAt` so the backing store evicts stale entries automatically, even between process restarts.
+`CacheEntry` objects are serialized to JSON and stored as UTF-8 bytes. The `AbsoluteExpiration` is extended by `Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)` beyond `CacheEntry.ExpiresAt`, so the backing store retains entries long enough for stale serving while still evicting them once all configured windows have expired — even between process restarts.
 
 ### Redis
 
@@ -441,7 +442,7 @@ The library has **no third-party dependencies**. It only references standard Mic
 dotnet test Coalesce.Http.Tests
 ```
 
-224 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, per-request coalescing policy, metrics, Polly integration (retry + hedging), response cloning, and distributed cache store.
+226 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, per-request coalescing policy, metrics, Polly integration (retry + hedging), response cloning, and distributed cache store.
 
 ---
 
@@ -540,8 +541,12 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### v1.0.4
+- **Fix: distributed cache TTL now covers stale-serving windows** — `DistributedCacheStore.Set` previously set `AbsoluteExpiration = ExpiresAt`, causing the backing store (Redis, SQL Server, etc.) to evict entries at the moment they became stale. Entries with `stale-if-error` or `stale-while-revalidate` directives could therefore never be served as stale from a distributed cache. The TTL is now extended by `Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)` beyond `ExpiresAt`, ensuring entries survive until all configured stale windows have elapsed.
+- **Fix: unobserved task exceptions in `RequestCoalescer`** — when the winner's factory threw, `TaskCompletionSource.SetException` was called on the shared task. Waiters that had not yet subscribed (or whose `.WaitAsync()` wrappers were GC'd before observation) left the exception unobserved, triggering `TaskScheduler.UnobservedTaskException` warnings on the finalizer thread. The exception is now explicitly observed in the `finally` block via `_ = Tcs.Task.Exception`.
+
 ### v1.0.3
-- **Distributed cache store** — built-in `DistributedCacheStore` backed by `IDistributedCache`; call `UseDistributedCacheStore()` after `AddCoalesceHttp()` / `AddCachingOnly()` to share the cache across multiple instances (Redis, SQL Server, or any `IDistributedCache` provider). `CacheEntry` is serialized as UTF-8 JSON; `AbsoluteExpiration` is set to `ExpiresAt` so the backing store evicts stale entries automatically. No new NuGet dependencies.
+- **Distributed cache store**
 - **`UseDistributedCacheStore()` pipeline helper** — replaces the default `MemoryCacheStore` singleton; chainable on `IHttpClientBuilder`
 
 ### v1.0.2

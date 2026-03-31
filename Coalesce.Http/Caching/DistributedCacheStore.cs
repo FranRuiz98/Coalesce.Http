@@ -55,9 +55,16 @@ public sealed class DistributedCacheStore(IDistributedCache distributedCache) : 
     {
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(entry, s_jsonOptions);
 
+        // Extend the backing-store TTL by the maximum stale window so entries remain
+        // available for stale-if-error and stale-while-revalidate serving after ExpiresAt.
+        long staleWindowSeconds = Math.Max(entry.StaleIfErrorSeconds, entry.StaleWhileRevalidateSeconds);
+        DateTimeOffset absoluteExpiration = staleWindowSeconds > 0
+            ? entry.ExpiresAt + TimeSpan.FromSeconds(staleWindowSeconds)
+            : entry.ExpiresAt;
+
         DistributedCacheEntryOptions cacheEntryOptions = new()
         {
-            AbsoluteExpiration = entry.ExpiresAt
+            AbsoluteExpiration = absoluteExpiration
         };
 
         distributedCache.Set(key, bytes, cacheEntryOptions);

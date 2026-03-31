@@ -100,6 +100,12 @@ internal sealed partial class RequestCoalescer(CoalescerOptions options, Coalesc
             {
                 _inflight.TryRemove(key, out _);
                 metrics?.DecrementInflight();
+
+                // Observe the TCS task's exception (if any) to prevent UnobservedTaskException.
+                if (coalescedRequest.Tcs.Task.IsFaulted)
+                {
+                    _ = coalescedRequest.Tcs.Task.Exception;
+                }
             }
         }
 
