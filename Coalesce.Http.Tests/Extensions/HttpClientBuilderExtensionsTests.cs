@@ -1,5 +1,8 @@
+using Coalesce.Http.Caching;
 using Coalesce.Http.Extensions;
 using FluentAssertions;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Coalesce.Http.Tests.Extensions;
@@ -209,6 +212,97 @@ public class HttpClientBuilderExtensionsTests
         Action act = () => builder.AddCoalescingOnly();
 
         act.Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void UseDistributedCacheStore_WithNullBuilder_Throws()
+    {
+        IHttpClientBuilder builder = null!;
+
+        Action act = () => builder.UseDistributedCacheStore();
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void UseDistributedCacheStore_ReplacesMemoryCacheStore_WithDistributedCacheStore()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IDistributedCache>(
+            new MemoryDistributedCache(
+                Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions())));
+
+        services.AddHttpClient("test")
+            .AddCoalesceHttp()
+            .UseDistributedCacheStore();
+
+        var sp = services.BuildServiceProvider();
+        var store = sp.GetRequiredService<ICacheStore>();
+
+        store.Should().BeOfType<DistributedCacheStore>();
+    }
+
+    [Fact]
+    public void UseDistributedCacheStore_WithoutPriorCacheRegistration_RegistersDistributedCacheStore()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IDistributedCache>(
+            new MemoryDistributedCache(
+                Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions())));
+
+        // UseDistributedCacheStore without a prior AddCoalesceHttp/AddCachingOnly
+        services.AddHttpClient("test")
+            .UseDistributedCacheStore();
+
+        var sp = services.BuildServiceProvider();
+        var store = sp.GetRequiredService<ICacheStore>();
+
+        store.Should().BeOfType<DistributedCacheStore>();
+    }
+
+    [Fact]
+    public void UseDistributedCacheStore_ReturnsBuilder_ForChaining()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IDistributedCache>(
+            new MemoryDistributedCache(
+                Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions())));
+
+        var builder = services.AddHttpClient("test").AddCoalesceHttp();
+        var result = builder.UseDistributedCacheStore();
+
+        result.Should().BeSameAs(builder);
+    }
+
+    [Fact]
+    public async Task UseDistributedCacheStore_CacheHit_ServesResponseWithoutCallingBackend()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IDistributedCache>(
+            new MemoryDistributedCache(
+                Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions())));
+
+        int backendCalls = 0;
+        services.AddHttpClient("test")
+            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromMinutes(5))
+            .UseDistributedCacheStore()
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
+            {
+                Interlocked.Increment(ref backendCalls);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("cached")
+                });
+            }));
+
+        var client = services.BuildServiceProvider()
+            .GetRequiredService<IHttpClientFactory>()
+            .CreateClient("test");
+
+        _ = await client.GetAsync("https://api.test/dist");
+        _ = await client.GetAsync("https://api.test/dist");
+
+        backendCalls.Should().Be(1, "second request must be served from the distributed cache");
     }
 
     private class TestHandler : HttpMessageHandler

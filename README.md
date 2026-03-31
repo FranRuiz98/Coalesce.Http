@@ -35,6 +35,7 @@ Coalesce.Http does **not** replace `HttpClient` or Polly. It is a thin, composab
 | **stale-if-error** (RFC 5861 §4) | Serves stale cached content when the origin returns 5xx or throws |
 | **Per-request cache policy** | `CacheRequestPolicy.BypassCache`, `ForceRevalidate`, `NoStore` via `HttpRequestMessage.Options` |
 | **Pluggable cache store** | `ICacheStore` interface; swap in Redis or any custom store without touching the middleware |
+| **Distributed cache store** | Built-in `DistributedCacheStore` backed by `IDistributedCache` — one call to `UseDistributedCacheStore()` for shared caching across instances |
 | **LRU eviction / size cap** | `MaxCacheSize` sets a byte ceiling; the memory store evicts least-recently-used entries automatically |
 | **Request coalescing** | Concurrent identical GET/HEAD requests share a single backend call |
 | **Per-request coalescing policy** | `CoalescingRequestPolicy.BypassCoalescing` via `HttpRequestMessage.Options` |
@@ -253,9 +254,58 @@ You can also call `ICacheStore.Remove` directly at any time to evict a specific 
 
 ---
 
+## Distributed cache store
+
+For multi-instance deployments (Kubernetes, App Service scale-out, etc.) replace the default in-memory store with a `IDistributedCache`-backed implementation by calling `UseDistributedCacheStore()` **after** `AddCoalesceHttp()`.
+
+`CacheEntry` objects are serialized to JSON and stored as UTF-8 bytes. The `AbsoluteExpiration` is set to `CacheEntry.ExpiresAt` so the backing store evicts stale entries automatically, even between process restarts.
+
+### Redis
+
+```bash
+dotnet add package Microsoft.Extensions.Caching.StackExchangeRedis
+```
+
+```csharp
+builder.Services.AddStackExchangeRedisCache(o =>
+    o.Configuration = builder.Configuration["Redis:ConnectionString"]);
+
+builder.Services
+    .AddHttpClient("catalog")
+    .AddCoalesceHttp(configureCaching: o => o.DefaultTtl = TimeSpan.FromMinutes(5))
+    .UseDistributedCacheStore();
+```
+
+### Any `IDistributedCache` provider
+
+`UseDistributedCacheStore()` works with **any** registered `IDistributedCache` implementation — Redis, SQL Server, NCache, or your own:
+
+```csharp
+// SQL Server example
+builder.Services.AddDistributedSqlServerCache(o =>
+{
+    o.ConnectionString = "..."; o.SchemaName = "dbo"; o.TableName = "HttpCache";
+});
+
+builder.Services
+    .AddHttpClient("catalog")
+    .AddCoalesceHttp()
+    .UseDistributedCacheStore();
+```
+
+### API
+
+| Method | Behaviour |
+|---|---|
+| `UseDistributedCacheStore()` | Removes the default `MemoryCacheStore` singleton and registers `DistributedCacheStore`. Must be chained after `AddCoalesceHttp()` or `AddCachingOnly()`. |
+
+> **Request coalescing still applies.** `CoalescingHandler` deduplicates concurrent cache misses before the distributed cache is consulted, so a cache-miss storm does not produce a distributed-cache stampede.
+
+---
+
 ## Metrics
 
-Register a `MeterListener` (or use OpenTelemetry) to collect the following instruments from the **`Coalesce.Http`** meter:
+Register a `MeterListener`
 
 | Instrument | Unit | Type | Description |
 |---|---|---|---|
@@ -280,6 +330,7 @@ Register a `MeterListener` (or use OpenTelemetry) to collect the following instr
 | `AddCoalesceHttp()` | `CachingMiddleware` + `CoalescingHandler` + `CoalesceHttpMetrics` |
 | `AddCachingOnly()` | `CachingMiddleware` + `CoalesceHttpMetrics` |
 | `AddCoalescingOnly()` | `CoalescingHandler` + `CoalesceHttpMetrics` |
+| `UseDistributedCacheStore()` | Replaces `MemoryCacheStore` with `DistributedCacheStore` (chain after the above helpers) |
 
 ---
 
@@ -354,6 +405,7 @@ Coalesce.Http/
 │  ├─ FreshnessCalculator.cs    ← s-maxage → max-age → Expires → DefaultTtl
 │  ├─ ICacheStore.cs            ← pluggable store interface
 │  ├─ MemoryCacheStore.cs       ← default IMemoryCache-backed implementation with LRU eviction
+│  ├─ DistributedCacheStore.cs  ← IDistributedCache-backed implementation (Redis, SQL Server, …)
 │  ├─ CacheRequestPolicy.cs     ← per-request option keys (BypassCache, ForceRevalidate, NoStore)
 │  ├─ CacheEntry.cs
 │  ├─ CacheOptions.cs
@@ -366,7 +418,7 @@ Coalesce.Http/
 ├─ Options/
 │  └─ CoalescerOptions.cs
 └─ Extensions/
-   └─ HttpClientBuilderExtensions.cs  ← AddCoalesceHttp / AddCachingOnly / AddCoalescingOnly
+   └─ HttpClientBuilderExtensions.cs  ← AddCoalesceHttp / AddCachingOnly / AddCoalescingOnly / UseDistributedCacheStore
 ```
 
 ---
@@ -389,7 +441,7 @@ The library has **no third-party dependencies**. It only references standard Mic
 dotnet test Coalesce.Http.Tests
 ```
 
-209 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, per-request coalescing policy, metrics, Polly integration (retry + hedging), and response cloning.
+224 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, per-request coalescing policy, metrics, Polly integration (retry + hedging), response cloning, and distributed cache store.
 
 ---
 
@@ -487,6 +539,14 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## Changelog
+
+### v1.0.3
+- **Distributed cache store** — built-in `DistributedCacheStore` backed by `IDistributedCache`; call `UseDistributedCacheStore()` after `AddCoalesceHttp()` / `AddCachingOnly()` to share the cache across multiple instances (Redis, SQL Server, or any `IDistributedCache` provider). `CacheEntry` is serialized as UTF-8 JSON; `AbsoluteExpiration` is set to `ExpiresAt` so the backing store evicts stale entries automatically. No new NuGet dependencies.
+- **`UseDistributedCacheStore()` pipeline helper** — replaces the default `MemoryCacheStore` singleton; chainable on `IHttpClientBuilder`
+
+### v1.0.2
+- **`Age` response header (RFC 9111 §5.1)** — cached responses now carry an `Age` header reflecting the elapsed seconds since the entry was stored
+- **`StoredAt` field on `CacheEntry`** — records the absolute time the response was cached, used to compute `Age`
 
 ### v1.0.1
 - **Multi-targeting** — added .NET 8.0 support alongside .NET 10.0; minimum requirement is now .NET 8.0 or later

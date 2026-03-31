@@ -3,6 +3,7 @@ using Coalesce.Http.Coalescing;
 using Coalesce.Http.Handlers;
 using Coalesce.Http.Metrics;
 using Coalesce.Http.Options;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -115,6 +116,47 @@ public static class HttpClientBuilderExtensions
         CoalescerOptions options = new();
         configure?.Invoke(options);
         AddCoalescing(builder, options);
+
+        return builder;
+    }
+
+    /// <summary>
+    /// Replaces the default in-memory <see cref="ICacheStore"/> with a <see cref="DistributedCacheStore"/>
+    /// backed by <see cref="IDistributedCache"/>, enabling shared caching across multiple instances.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Call this method <b>after</b> <c>AddCoalesceHttp()</c> or <c>AddCachingOnly()</c> and after
+    /// registering an <see cref="IDistributedCache"/> implementation (e.g., Redis, SQL Server):
+    /// </para>
+    /// <code>
+    /// services.AddStackExchangeRedisCache(o => o.Configuration = "localhost:6379");
+    ///
+    /// services.AddHttpClient("catalog")
+    ///     .AddCoalesceHttp()
+    ///     .UseDistributedCacheStore();
+    /// </code>
+    /// <para>
+    /// Cache entries are serialized with <see cref="System.Text.Json"/> and the
+    /// <c>AbsoluteExpiration</c> is set to <see cref="CacheEntry.ExpiresAt"/> so the backing store
+    /// evicts stale entries automatically.
+    /// </para>
+    /// </remarks>
+    /// <param name="builder">The <see cref="IHttpClientBuilder"/> to configure.</param>
+    public static IHttpClientBuilder UseDistributedCacheStore(this IHttpClientBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        // Remove the default MemoryCacheStore registration so the distributed store takes its place.
+        ServiceDescriptor? existing = builder.Services.FirstOrDefault(
+            d => d.ServiceType == typeof(ICacheStore));
+
+        if (existing is not null)
+        {
+            builder.Services.Remove(existing);
+        }
+
+        builder.Services.AddSingleton<ICacheStore, DistributedCacheStore>();
 
         return builder;
     }
