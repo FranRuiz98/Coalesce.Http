@@ -49,4 +49,26 @@ public sealed class CoalescerOptions
             _maxResponseBodyBytes = value;
         }
     }
+
+    /// <summary>
+    /// Gets or sets the request header names that are included in the coalescing key.
+    /// </summary>
+    /// <remarks>
+    /// By default, coalescing is keyed on the HTTP method and the absolute URI only.
+    /// When multiple tenants (or API versions) use the same URL but differentiate requests via a
+    /// header such as <c>X-Tenant-Id</c> or <c>Accept-Version</c>, add those header names here
+    /// so that requests with different header values are coalesced independently.
+    /// Header names are matched case-insensitively and sorted alphabetically when building the key
+    /// to ensure deterministic results regardless of insertion order.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// services.AddHttpClient("catalog")
+    ///     .AddCoalesceHttp(configureCoalescing: o =>
+    ///     {
+    ///         o.CoalesceKeyHeaders = ["X-Tenant-Id", "Accept-Version"];
+    ///     });
+    /// </code>
+    /// </example>
+    public IReadOnlyList<string> CoalesceKeyHeaders { get; set; } = [];
 }

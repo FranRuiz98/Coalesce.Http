@@ -22,9 +22,10 @@ namespace Coalesce.Http.Caching;
 /// </code>
 /// <para>
 /// <see cref="CacheEntry"/> objects are serialized with <see cref="System.Text.Json"/> and stored
-/// as UTF-8 bytes. The <see cref="DistributedCacheEntryOptions.AbsoluteExpiration"/> is set to
-/// <see cref="CacheEntry.ExpiresAt"/> so the backing store evicts stale entries automatically
-/// even when this process is not running.
+/// as UTF-8 bytes. The <see cref="DistributedCacheEntryOptions.AbsoluteExpiration"/> is extended
+/// by <c>Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)</c> beyond <see cref="CacheEntry.ExpiresAt"/>
+/// so the backing store retains entries long enough for stale serving while still evicting them once
+/// all configured windows have expired, even between process restarts.
 /// </para>
 /// </remarks>
 public sealed class DistributedCacheStore(IDistributedCache distributedCache) : ICacheStore
@@ -53,27 +54,56 @@ public sealed class DistributedCacheStore(IDistributedCache distributedCache) : 
     /// <inheritdoc/>
     public void Set(string key, CacheEntry entry)
     {
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(entry, s_jsonOptions);
-
-        // Extend the backing-store TTL by the maximum stale window so entries remain
-        // available for stale-if-error and stale-while-revalidate serving after ExpiresAt.
-        long staleWindowSeconds = Math.Max(entry.StaleIfErrorSeconds, entry.StaleWhileRevalidateSeconds);
-        DateTimeOffset absoluteExpiration = staleWindowSeconds > 0
-            ? entry.ExpiresAt + TimeSpan.FromSeconds(staleWindowSeconds)
-            : entry.ExpiresAt;
-
-        DistributedCacheEntryOptions cacheEntryOptions = new()
-        {
-            AbsoluteExpiration = absoluteExpiration
-        };
-
-        distributedCache.Set(key, bytes, cacheEntryOptions);
+        (byte[] bytes, DistributedCacheEntryOptions entryOptions) = Serialize(entry);
+        distributedCache.Set(key, bytes, entryOptions);
     }
 
     /// <inheritdoc/>
     public void Remove(string key)
     {
         distributedCache.Remove(key);
+    }
+
+    /// <inheritdoc/>
+    public async ValueTask<CacheEntry?> GetAsync(string key, CancellationToken ct = default)
+    {
+        byte[]? bytes = await distributedCache.GetAsync(key, ct).ConfigureAwait(false);
+        if (bytes is null)
+        {
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<CacheEntry>(bytes, s_jsonOptions);
+    }
+
+    /// <inheritdoc/>
+    public async ValueTask SetAsync(string key, CacheEntry entry, CancellationToken ct = default)
+    {
+        (byte[] bytes, DistributedCacheEntryOptions entryOptions) = Serialize(entry);
+        await distributedCache.SetAsync(key, bytes, entryOptions, ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async ValueTask RemoveAsync(string key, CancellationToken ct = default)
+    {
+        await distributedCache.RemoveAsync(key, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Serializes <paramref name="entry"/> to UTF-8 JSON and builds the <see cref="DistributedCacheEntryOptions"/>
+    /// with an <c>AbsoluteExpiration</c> extended by the maximum stale window so entries remain
+    /// available for stale-if-error and stale-while-revalidate serving after <see cref="CacheEntry.ExpiresAt"/>.
+    /// </summary>
+    private static (byte[] Bytes, DistributedCacheEntryOptions Options) Serialize(CacheEntry entry)
+    {
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(entry, s_jsonOptions);
+
+        long staleWindowSeconds = Math.Max(entry.StaleIfErrorSeconds, entry.StaleWhileRevalidateSeconds);
+        DateTimeOffset absoluteExpiration = staleWindowSeconds > 0
+            ? entry.ExpiresAt + TimeSpan.FromSeconds(staleWindowSeconds)
+            : entry.ExpiresAt;
+
+        return (bytes, new DistributedCacheEntryOptions { AbsoluteExpiration = absoluteExpiration });
     }
 
     /// <summary>

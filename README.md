@@ -5,7 +5,7 @@
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
-[![Tests](https://img.shields.io/badge/tests-226%20passed-brightgreen)](#running-the-tests)
+[![Tests](https://img.shields.io/badge/tests-253%20passed-brightgreen)](#running-the-tests)
 [![NuGet](https://img.shields.io/badge/version-1.0.4-blue)](#changelog)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 

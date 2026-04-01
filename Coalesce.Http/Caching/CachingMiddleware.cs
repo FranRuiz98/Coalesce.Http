@@ -11,9 +11,11 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                                         ICacheKeyBuilder keyBuilder,
                                         CacheOptions options,
                                         CoalesceHttpMetrics? metrics = null,
-                                        ILogger<CachingMiddleware>? logger = null) : DelegatingHandler
+                                        ILogger<CachingMiddleware>? logger = null,
+                                        TimeProvider? timeProvider = null) : DelegatingHandler
 {
     private readonly ILogger logger = logger ?? NullLogger<CachingMiddleware>.Instance;
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ConcurrentDictionary<string, Task> _backgroundRevalidations = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -81,7 +83,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// response.</param>
     /// <returns>An instance of HttpResponseMessage populated with the status code, body, and headers from the provided cache
     /// entry.</returns>
-    private static HttpResponseMessage CreateResponse(CacheEntry entry)
+    private HttpResponseMessage CreateResponse(CacheEntry entry)
     {
         HttpResponseMessage response = new((HttpStatusCode)entry.StatusCode)
         {
@@ -94,7 +96,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         }
 
         // §5.1 — Age: elapsed seconds since the response was stored
-        long ageSeconds = Math.Max(0L, (long)(DateTimeOffset.UtcNow - entry.StoredAt).TotalSeconds);
+        long ageSeconds = Math.Max(0L, (long)(_timeProvider.GetUtcNow() - entry.StoredAt).TotalSeconds);
         response.Headers.Age = new TimeSpan(ageSeconds * TimeSpan.TicksPerSecond);
 
         return response;
@@ -124,12 +126,12 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         }
 
         CacheControlHeaderValue? cc = response.Headers.CacheControl;
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = _timeProvider.GetUtcNow();
 
         // §5.2.2.4 — no-cache: store but mark as immediately stale to force revalidation on every use
         DateTimeOffset expiresAt = cc?.NoCache == true
             ? now
-            : FreshnessCalculator.ComputeExpiresAt(response, options);
+            : FreshnessCalculator.ComputeExpiresAt(response, options, _timeProvider);
 
         // §4.1 — Vary: capture field names and the corresponding request header values
         string[] varyFields = ExtractVaryFields(response);
@@ -151,7 +153,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             MustRevalidate = cc?.MustRevalidate == true || cc?.ProxyRevalidate == true
         };
 
-        cache.Set(key, entry);
+        await cache.SetAsync(key, entry, ct).ConfigureAwait(false);
     }
 
     private static string[] ExtractVaryFields(HttpResponseMessage response)
@@ -204,7 +206,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             // the cached GET entry for the effective request URI (and Location / Content-Location).
             if (IsUnsafeMethod(request.Method) && IsNonErrorResponse(unsafeResponse))
             {
-                InvalidateForUnsafeMethod(request, unsafeResponse);
+                await InvalidateForUnsafeMethod(request, unsafeResponse, ct).ConfigureAwait(false);
             }
 
             return unsafeResponse;
@@ -212,7 +214,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         string key = keyBuilder.Build(request);
 
-        _ = cache.TryGetValue(key, out CacheEntry? entry);
+        CacheEntry? entry = await cache.GetAsync(key, ct).ConfigureAwait(false);
 
         // §4.1 — Vary: * means this response must never be served from cache
         if (entry is not null && IsVaryStar(entry))
@@ -230,7 +232,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             || (request.Options.TryGetValue(CacheRequestPolicy.ForceRevalidate, out bool forceRevalidate) && forceRevalidate);
 
         // Fresh cache hit — skip if client demands revalidation (§5.2.1.4)
-        if (entry is not null && !entry.IsExpired() && !requestNoCache)
+        if (entry is not null && !entry.IsExpired(_timeProvider) && !requestNoCache)
         {
             metrics?.RecordCacheHit();
             LogCacheHit(key);
@@ -389,12 +391,12 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             CacheEntry refreshed = entry with
             {
-                ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options),
+                ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options, _timeProvider),
                 StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
                 StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
                 MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
             };
-            cache.Set(key, refreshed);
+            await cache.SetAsync(key, refreshed, ct).ConfigureAwait(false);
             metrics?.RecordCacheHit();
             return CreateResponse(refreshed);
         }
@@ -414,24 +416,24 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// Returns <see langword="true"/> when the given entry has a positive stale-if-error window
     /// that has not yet expired (RFC 5861 §4).
     /// </summary>
-    private static bool CanServeStaleOnError(CacheEntry? entry)
+    private bool CanServeStaleOnError(CacheEntry? entry)
     {
         return entry is not null
             && !entry.MustRevalidate
             && entry.StaleIfErrorSeconds > 0
-            && DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleIfErrorSeconds);
+            && _timeProvider.GetUtcNow() < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleIfErrorSeconds);
     }
 
     /// <summary>
     /// Returns <see langword="true"/> when the given entry is stale but within the
     /// stale-while-revalidate window (RFC 5861 §3).
     /// </summary>
-    private static bool CanServeStaleWhileRevalidate(CacheEntry entry)
+    private bool CanServeStaleWhileRevalidate(CacheEntry entry)
     {
         return !entry.MustRevalidate
             && entry.StaleWhileRevalidateSeconds > 0
-            && entry.IsExpired()
-            && DateTimeOffset.UtcNow < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleWhileRevalidateSeconds);
+            && entry.IsExpired(_timeProvider)
+            && _timeProvider.GetUtcNow() < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleWhileRevalidateSeconds);
     }
 
     /// <summary>
@@ -467,12 +469,12 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                     {
                         CacheEntry refreshed = entry with
                         {
-                            ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options),
+                            ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options, _timeProvider),
                             StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
                             StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
                             MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
                         };
-                        cache.Set(key, refreshed);
+                        await cache.SetAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
                     }
                     else if (IsResponseCacheable(response))
                     {
@@ -525,13 +527,13 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// Invalidates cached entries affected by a successful unsafe method response (RFC 9111 §4.4).
     /// Removes the effective request URI and, if present, the Location and Content-Location URIs.
     /// </summary>
-    private void InvalidateForUnsafeMethod(HttpRequestMessage request, HttpResponseMessage response)
+    private async ValueTask InvalidateForUnsafeMethod(HttpRequestMessage request, HttpResponseMessage response, CancellationToken ct)
     {
         // §4.4 MUST — effective request URI
         string effectiveKey = BuildGetKey(request.RequestUri);
-        if (cache.TryGetValue(effectiveKey, out _))
+        if (await cache.GetAsync(effectiveKey, ct).ConfigureAwait(false) is not null)
         {
-            cache.Remove(effectiveKey);
+            await cache.RemoveAsync(effectiveKey, ct).ConfigureAwait(false);
             metrics?.RecordCacheInvalidation();
             LogCacheInvalidation(effectiveKey, request.Method.Method);
         }
@@ -540,9 +542,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         if (response.Headers.Location is Uri location && location != request.RequestUri)
         {
             string locationKey = BuildGetKey(location);
-            if (cache.TryGetValue(locationKey, out _))
+            if (await cache.GetAsync(locationKey, ct).ConfigureAwait(false) is not null)
             {
-                cache.Remove(locationKey);
+                await cache.RemoveAsync(locationKey, ct).ConfigureAwait(false);
                 metrics?.RecordCacheInvalidation();
                 LogCacheInvalidation(locationKey, request.Method.Method);
             }
@@ -554,9 +556,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             && contentLocation != response.Headers.Location)
         {
             string contentLocationKey = BuildGetKey(contentLocation);
-            if (cache.TryGetValue(contentLocationKey, out _))
+            if (await cache.GetAsync(contentLocationKey, ct).ConfigureAwait(false) is not null)
             {
-                cache.Remove(contentLocationKey);
+                await cache.RemoveAsync(contentLocationKey, ct).ConfigureAwait(false);
                 metrics?.RecordCacheInvalidation();
                 LogCacheInvalidation(contentLocationKey, request.Method.Method);
             }

@@ -13,11 +13,15 @@ internal static class FreshnessCalculator
     /// </summary>
     /// <param name="response">The HTTP response message to evaluate.</param>
     /// <param name="options">The cache options providing the fallback TTL.</param>
+    /// <param name="timeProvider">
+    /// The <see cref="TimeProvider"/> used to obtain the current time.
+    /// Defaults to <see cref="TimeProvider.System"/> when <see langword="null"/>.
+    /// </param>
     /// <returns>The absolute <see cref="DateTimeOffset"/> at which the entry should be considered stale.</returns>
-    public static DateTimeOffset ComputeExpiresAt(HttpResponseMessage response, CacheOptions options)
+    public static DateTimeOffset ComputeExpiresAt(HttpResponseMessage response, CacheOptions options, TimeProvider? timeProvider = null)
     {
         CacheControlHeaderValue? cc = response.Headers.CacheControl;
-        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset now = (timeProvider ?? TimeProvider.System).GetUtcNow();
 
         // §4.2.1 — s-maxage (shared-cache directive, highest priority)
         if (cc?.SharedMaxAge is TimeSpan sMaxAge)

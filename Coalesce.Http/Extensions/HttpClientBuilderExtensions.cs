@@ -214,7 +214,8 @@ public static class HttpClientBuilderExtensions
                 sp.GetRequiredService<ICacheKeyBuilder>(),
                 options,
                 sp.GetService<CoalesceHttpMetrics>(),
-                sp.GetService<ILoggerFactory>()?.CreateLogger<CachingMiddleware>()));
+                sp.GetService<ILoggerFactory>()?.CreateLogger<CachingMiddleware>(),
+                sp.GetService<TimeProvider>()));
     }
 }
 

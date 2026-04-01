@@ -53,8 +53,12 @@ public sealed record CacheEntry
     /// Determines whether the cache entry has expired based on its expiration time.
     /// </summary>
     /// <returns>Returns <see langword="true"/> if the cache entry has expired; otherwise, <see langword="false"/>.</returns>
-    public bool IsExpired()
-    {
-        return DateTimeOffset.UtcNow >= ExpiresAt;
-    }
+    public bool IsExpired() => IsExpired(TimeProvider.System);
+
+    /// <summary>
+    /// Determines whether the cache entry has expired relative to the clock provided by <paramref name="timeProvider"/>.
+    /// </summary>
+    /// <param name="timeProvider">The <see cref="TimeProvider"/> used to obtain the current time.</param>
+    /// <returns>Returns <see langword="true"/> if the cache entry has expired; otherwise, <see langword="false"/>.</returns>
+    public bool IsExpired(TimeProvider timeProvider) => timeProvider.GetUtcNow() >= ExpiresAt;
 }

@@ -20,7 +20,7 @@ internal sealed partial class CoalescingHandler(RequestCoalescer coalescer,
         }
 
         return coalescer.ExecuteAsync(
-            RequestKey.Create(request),
+            RequestKey.Create(request, options?.CoalesceKeyHeaders),
             () => base.SendAsync(request, CancellationToken.None),
             cancellationToken);
     }
