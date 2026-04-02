@@ -198,6 +198,12 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return await base.SendAsync(request, ct).ConfigureAwait(false);
         }
 
+        // RFC 9110 §9.3.2 — HEAD requests are served from the GET cache entry when possible
+        if (request.Method == HttpMethod.Head)
+        {
+            return await HandleHeadAsync(request, ct).ConfigureAwait(false);
+        }
+
         if (!IsRequestCacheable(request))
         {
             HttpResponseMessage unsafeResponse = await base.SendAsync(request, ct).ConfigureAwait(false);
@@ -296,6 +302,86 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     private static bool IsVaryStar(CacheEntry entry)
     {
         return entry.VaryFields.Length == 1 && entry.VaryFields[0] == "*";
+    }
+
+    /// <summary>
+    /// Serves a HEAD request from the GET cache when possible (RFC 9110 §9.3.2).
+    /// </summary>
+    /// <remarks>
+    /// The cache is keyed on GET requests, so HEAD looks up the GET entry for the same URI.
+    /// A fresh hit returns all stored headers with an empty body (HEAD semantics).
+    /// A stale entry with a validator triggers a conditional HEAD revalidation; a 304 refreshes
+    /// the GET entry TTL and the cached headers are returned. Any other response is forwarded as-is.
+    /// </remarks>
+    private async Task<HttpResponseMessage> HandleHeadAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        // RFC 9110 §9.3.2 — use the GET cache key for HEAD requests
+        string getKey = BuildGetKey(request.RequestUri);
+
+        CacheEntry? entry = await cache.GetAsync(getKey, ct).ConfigureAwait(false);
+
+        if (entry is not null && IsVaryStar(entry))
+        {
+            entry = null;
+        }
+
+        if (entry is not null && !VaryMatches(entry, request))
+        {
+            entry = null;
+        }
+
+        bool requestNoCache = request.Headers.CacheControl?.NoCache == true
+            || (request.Options.TryGetValue(CacheRequestPolicy.ForceRevalidate, out bool force) && force);
+
+        // Fresh GET entry — serve headers with empty body
+        if (entry is not null && !entry.IsExpired(_timeProvider) && !requestNoCache)
+        {
+            metrics?.RecordCacheHit();
+            LogCacheHit(getKey);
+            HttpResponseMessage headHit = CreateResponse(entry);
+            headHit.Content = new ByteArrayContent([]);
+            return headHit;
+        }
+
+        // Stale entry with a validator — conditional HEAD revalidation
+        if (entry is not null && (entry.ETag is not null || entry.LastModified is not null))
+        {
+            metrics?.RecordRevalidation();
+            LogRevalidation(getKey);
+
+            if (entry.ETag is not null)
+            {
+                _ = request.Headers.Remove("If-None-Match");
+                _ = request.Headers.TryAddWithoutValidation("If-None-Match", entry.ETag);
+            }
+            else if (entry.LastModified is DateTimeOffset lastModified)
+            {
+                request.Headers.IfModifiedSince = lastModified;
+            }
+
+            HttpResponseMessage revalResponse = await base.SendAsync(request, ct).ConfigureAwait(false);
+
+            if (revalResponse.StatusCode == HttpStatusCode.NotModified)
+            {
+                CacheEntry refreshed = entry with
+                {
+                    ExpiresAt = FreshnessCalculator.ComputeExpiresAt(revalResponse, options, _timeProvider),
+                    StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(revalResponse, options),
+                    StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(revalResponse, options),
+                    MustRevalidate = revalResponse.Headers.CacheControl?.MustRevalidate == true || revalResponse.Headers.CacheControl?.ProxyRevalidate == true
+                };
+                await cache.SetAsync(getKey, refreshed, ct).ConfigureAwait(false);
+                metrics?.RecordCacheHit();
+                HttpResponseMessage headRefreshed = CreateResponse(refreshed);
+                headRefreshed.Content = new ByteArrayContent([]);
+                return headRefreshed;
+            }
+
+            return revalResponse;
+        }
+
+        // Miss or stale without validator — forward HEAD to origin
+        return await base.SendAsync(request, ct).ConfigureAwait(false);
     }
 
     /// <summary>

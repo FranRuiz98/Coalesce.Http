@@ -205,7 +205,7 @@ public static class HttpClientBuilderExtensions
                 memoryOptions.SizeLimit = sizeLimit;
             }
         });
-        builder.Services.TryAddSingleton<ICacheKeyBuilder, DefaultCacheKeyBuilder>();
+        builder.Services.TryAddSingleton<ICacheKeyBuilder>(_ => new DefaultCacheKeyBuilder(options.NormalizeQueryParameters));
         builder.Services.TryAddSingleton<ICacheStore, MemoryCacheStore>();
 
         _ = builder.AddHttpMessageHandler(sp =>

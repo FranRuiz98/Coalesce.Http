@@ -101,4 +101,16 @@ public sealed class CacheOptions
             _maxCacheSize = value;
         }
     }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether query parameters are sorted alphabetically
+    /// before the cache key is built by <see cref="DefaultCacheKeyBuilder"/>.
+    /// </summary>
+    /// <remarks>
+    /// When <see langword="true"/>, requests to <c>/items?b=2&amp;a=1</c> and
+    /// <c>/items?a=1&amp;b=2</c> map to the same cache entry, preventing spurious cache misses
+    /// caused by parameter-ordering differences in generated URLs.
+    /// Default is <see langword="false"/>.
+    /// </remarks>
+    public bool NormalizeQueryParameters { get; set; }
 }
