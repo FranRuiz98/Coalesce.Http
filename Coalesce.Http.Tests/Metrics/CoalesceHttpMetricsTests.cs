@@ -29,6 +29,10 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
     private long _coalescedInflight;
     private long _coalescedTimeouts;
 
+    // HEAD-tagged counters (measurements emitted with http.request.method = HEAD)
+    private long _headCacheHits;
+    private long _headCacheRevalidations;
+
     private static readonly FieldInfo MeterField =
         typeof(CoalesceHttpMetrics).GetField("_meter", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
@@ -48,13 +52,29 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
             }
         };
 
-        _listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        _listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
+            bool isHead = false;
+            foreach (KeyValuePair<string, object?> tag in tags)
+            {
+                if (tag.Key == "http.request.method" && tag.Value is string m && m == "HEAD")
+                {
+                    isHead = true;
+                    break;
+                }
+            }
+
             switch (instrument.Name)
             {
-                case "coalesce_http.cache.hits":            _cacheHits += measurement; break;
+                case "coalesce_http.cache.hits":
+                    _cacheHits += measurement;
+                    if (isHead) _headCacheHits += measurement;
+                    break;
                 case "coalesce_http.cache.misses":          _cacheMisses += measurement; break;
-                case "coalesce_http.cache.revalidations":   _cacheRevalidations += measurement; break;
+                case "coalesce_http.cache.revalidations":
+                    _cacheRevalidations += measurement;
+                    if (isHead) _headCacheRevalidations += measurement;
+                    break;
                 case "coalesce_http.cache.stale_errors_served": _staleErrorsServed += measurement; break;
                 case "coalesce_http.coalescing.deduplicated":   _coalescedDeduplicated += measurement; break;
                 case "coalesce_http.coalescing.inflight":       _coalescedInflight += measurement; break;
@@ -263,6 +283,89 @@ public sealed class CoalesceHttpMetricsTests : IDisposable
         _listener.RecordObservableInstruments();
 
         _coalescedTimeouts.Should().Be(1, "the waiter timed out and fell back to independent execution");
+    }
+
+    // ── HEAD-aware metrics ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task HeadCacheHit_RecordsHitMetricWithHeadTag()
+    {
+        ICacheStore cache = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
+        DefaultCacheKeyBuilder keyBuilder = new();
+        CacheOptions options = new() { DefaultTtl = TimeSpan.FromMinutes(5) };
+
+        (CachingMiddleware middleware, _) = BuildPipeline(_ =>
+        {
+            HttpResponseMessage r = new(HttpStatusCode.OK) { Content = new StringContent("body") };
+            return r;
+        }, cache, keyBuilder, options);
+
+        HttpMessageInvoker invoker = new(middleware);
+
+        // Warm the GET cache
+        _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/head-hit"), CancellationToken.None);
+
+        // HEAD request — should hit the GET cache entry
+        _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Head, "https://api.test/head-hit"), CancellationToken.None);
+
+        _listener.RecordObservableInstruments();
+
+        _headCacheHits.Should().BeGreaterThan(0, "HEAD cache hit must emit the hit metric with http.request.method=HEAD tag");
+    }
+
+    [Fact]
+    public async Task HeadRevalidation_RecordsRevalidationMetricWithHeadTag()
+    {
+        ICacheStore cache = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
+        DefaultCacheKeyBuilder keyBuilder = new();
+        CacheOptions options = new() { DefaultTtl = TimeSpan.FromMinutes(5) };
+
+        (CachingMiddleware middleware, _) = BuildPipeline(req =>
+        {
+            if (req.Method == HttpMethod.Head && req.Headers.IfNoneMatch.Any())
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotModified);
+            }
+            HttpResponseMessage r = new(HttpStatusCode.OK) { Content = new StringContent("body") };
+            r.Headers.ETag = new EntityTagHeaderValue("\"v1\"");
+            return r;
+        }, cache, keyBuilder, options);
+
+        HttpMessageInvoker invoker = new(middleware);
+
+        // Warm the GET cache
+        _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/head-reval"), CancellationToken.None);
+
+        // Force stale
+        string key = keyBuilder.Build(new HttpRequestMessage(HttpMethod.Get, "https://api.test/head-reval"));
+        if (cache.TryGetValue(key, out CacheEntry? entry) && entry is not null)
+        {
+            cache.Set(key, entry with { ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1) });
+        }
+
+        // HEAD request with stale entry — should trigger HEAD revalidation
+        _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Head, "https://api.test/head-reval"), CancellationToken.None);
+
+        _listener.RecordObservableInstruments();
+
+        _headCacheRevalidations.Should().BeGreaterThan(0, "HEAD revalidation must emit the revalidation metric with http.request.method=HEAD tag");
+    }
+
+    [Fact]
+    public async Task GetCacheHit_RecordsHitWithoutMethodTag()
+    {
+        (CachingMiddleware middleware, _) = BuildPipeline(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") });
+
+        HttpMessageInvoker invoker = new(middleware);
+
+        _ = await invoker.SendAsync(Req("https://api.test/get-hit-tag"), CancellationToken.None);
+        _ = await invoker.SendAsync(Req("https://api.test/get-hit-tag"), CancellationToken.None);
+
+        _listener.RecordObservableInstruments();
+
+        _cacheHits.Should().Be(1, "GET cache hit must be recorded");
+        _headCacheHits.Should().Be(0, "GET cache hit must not carry the HEAD tag");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -25,13 +25,24 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
         long staleIfErrorSeconds = 0;
         long staleWhileRevalidateSeconds = 0;
         bool mustRevalidate = false;
+        bool immutable = false;
 
-        reader.Read(); // StartObject
+        if (reader.TokenType != JsonTokenType.StartObject)
+        {
+            throw new JsonException("Expected start of CacheEntry object.");
+        }
+
+        _ = reader.Read(); // advance past StartObject to first property name
 
         while (reader.TokenType != JsonTokenType.EndObject)
         {
+            if (reader.TokenType != JsonTokenType.PropertyName)
+            {
+                throw new JsonException($"Unexpected token {reader.TokenType} while reading CacheEntry.");
+            }
+
             string propertyName = reader.GetString()!;
-            reader.Read();
+            _ = reader.Read();
 
             switch (propertyName)
             {
@@ -74,12 +85,15 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
                 case nameof(CacheEntry.MustRevalidate):
                     mustRevalidate = reader.GetBoolean();
                     break;
+                case nameof(CacheEntry.Immutable):
+                    immutable = reader.GetBoolean();
+                    break;
                 default:
                     reader.Skip();
                     break;
             }
 
-            reader.Read();
+            _ = reader.Read();
         }
 
         return new CacheEntry
@@ -95,7 +109,8 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
             VaryValues = varyValues,
             StaleIfErrorSeconds = staleIfErrorSeconds,
             StaleWhileRevalidateSeconds = staleWhileRevalidateSeconds,
-            MustRevalidate = mustRevalidate
+            MustRevalidate = mustRevalidate,
+            Immutable = immutable
         };
     }
 
@@ -115,10 +130,18 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
         {
             writer.WriteString(nameof(CacheEntry.ETag), value.ETag);
         }
+        else
+        {
+            writer.WriteNull(nameof(CacheEntry.ETag));
+        }
 
         if (value.LastModified is DateTimeOffset lastModified)
         {
             writer.WriteString(nameof(CacheEntry.LastModified), lastModified);
+        }
+        else
+        {
+            writer.WriteNull(nameof(CacheEntry.LastModified));
         }
 
         writer.WritePropertyName(nameof(CacheEntry.VaryFields));
@@ -130,6 +153,7 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
         writer.WriteNumber(nameof(CacheEntry.StaleIfErrorSeconds), value.StaleIfErrorSeconds);
         writer.WriteNumber(nameof(CacheEntry.StaleWhileRevalidateSeconds), value.StaleWhileRevalidateSeconds);
         writer.WriteBoolean(nameof(CacheEntry.MustRevalidate), value.MustRevalidate);
+        writer.WriteBoolean(nameof(CacheEntry.Immutable), value.Immutable);
 
         writer.WriteEndObject();
     }

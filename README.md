@@ -5,8 +5,8 @@
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
-[![Tests](https://img.shields.io/badge/tests-253%20passed-brightgreen)](#running-the-tests)
-[![NuGet](https://img.shields.io/badge/version-1.0.4-blue)](#changelog)
+[![Tests](https://img.shields.io/badge/tests-315%20passed-brightgreen)](#running-the-tests)
+[![NuGet](https://img.shields.io/badge/version-1.1.0-blue)](#changelog)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
 **Coalesce.Http** is a .NET library that extends the `HttpClient` pipeline to solve common problems in high-concurrency distributed systems:
@@ -30,20 +30,27 @@ Coalesce.Http does **not** replace `HttpClient` or Polly. It is a thin, composab
 | Feature | Details |
 |---|---|
 | **RFC 9111 caching** | `max-age`, `s-maxage`, `Expires`, `no-cache`, `no-store`, `private`, `Vary`, `ETag`, `Last-Modified` |
+| **Additional cacheable status codes** | `301 Moved Permanently` (heuristic), `404`/`405`/`410`/`414` (explicit `max-age`/`Expires` required) — RFC 9111 §3.2 |
 | **must-revalidate / proxy-revalidate** | Blocks stale-if-error and stale-while-revalidate when the origin requires strict freshness (RFC 9111 §5.2.2.2) |
+| **Cache-Control: immutable** (RFC 8246) | Fresh immutable entries are served without revalidation even when the client sends `no-cache` or `ForceRevalidate` |
+| **Cache-Control: only-if-cached** (RFC 9111 §5.2.1.7) | Returns `504 Gateway Timeout` immediately when no usable cache entry exists, without contacting the origin |
+| **Client conditional request pass-through** | If the incoming GET carries `If-None-Match`/`If-Modified-Since` that matches a fresh entry, return `304 Not Modified` directly without hitting the origin (RFC 9111 §4.3.2) |
 | **Unsafe method invalidation** | DELETE / POST / PUT / PATCH success evicts the affected GET entry + `Location` / `Content-Location` URIs (RFC 9111 §4.4) |
 | **stale-while-revalidate** (RFC 5861 §3) | Serves stale instantly and triggers a background refresh; zero extra latency on expiry |
 | **stale-if-error** (RFC 5861 §4) | Serves stale cached content when the origin returns 5xx or throws |
 | **Per-request cache policy** | `CacheRequestPolicy.BypassCache`, `ForceRevalidate`, `NoStore` via `HttpRequestMessage.Options` |
 | **Pluggable cache store** | `ICacheStore` interface; swap in Redis or any custom store without touching the middleware |
 | **Distributed cache store** | Built-in `DistributedCacheStore` backed by `IDistributedCache` — one call to `UseDistributedCacheStore()` for shared caching across instances |
+| **Accurate size accounting** | `MemoryCacheStore` measures headers, Vary metadata, and ETag alongside the body for precise `MaxCacheSize` enforcement |
 | **LRU eviction / size cap** | `MaxCacheSize` sets a byte ceiling; the memory store evicts least-recently-used entries automatically |
 | **Request coalescing** | Concurrent identical GET/HEAD requests share a single backend call |
 | **Per-request coalescing policy** | `CoalescingRequestPolicy.BypassCoalescing` via `HttpRequestMessage.Options` |
 | **Retry-safe** | The winner's `CancellationToken` is not forwarded to the factory; retries inside the coalesced execution work correctly |
 | **Hedging compatible** | The caching layer injects conditional headers once, before Polly; every hedged clone carries them |
+| **HEAD-aware metrics** | Cache-hit and revalidation counters carry an `http.request.method = HEAD` tag dimension for HEAD requests |
 | **System.Diagnostics.Metrics** | Nine instruments under the `Coalesce.Http` meter |
 | **Configurable pipeline** | `AddCoalesceHttp`, `AddCachingOnly`, `AddCoalescingOnly` helpers |
+| **AOT / IL-trim safe** | All JSON serialisation uses `System.Text.Json` source generation; zero reflection |
 
 ---
 
@@ -442,7 +449,7 @@ The library has **no third-party dependencies**. It only references standard Mic
 dotnet test Coalesce.Http.Tests
 ```
 
-226 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, per-request coalescing policy, metrics, Polly integration (retry + hedging), response cloning, and distributed cache store.
+315 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, per-request coalescing policy, metrics, Polly integration (retry + hedging), response cloning, distributed cache store, immutable entries, only-if-cached, client conditional 304 pass-through, additional cacheable status codes, accurate size accounting, and HEAD-aware metrics.
 
 ---
 
@@ -540,6 +547,16 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## Changelog
+
+### v1.1.0
+- **Client conditional request pass-through (RFC 9111 §4.3.2)** — when an incoming GET carries `If-None-Match` or `If-Modified-Since` and a fresh cached entry has a matching validator, the middleware returns `304 Not Modified` directly without contacting the origin. `If-None-Match` takes precedence over `If-Modified-Since` per RFC 9110 §13.1. The 304 includes mandatory headers (`ETag`, `Cache-Control`, `Content-Location`, `Date`, `Expires`, `Vary`) and an `Age` header.
+- **Additional cacheable status codes (RFC 9111 §3.2)** — `301 Moved Permanently` is now cached heuristically (using `max-age`/`Expires`/`DefaultTtl`); `404 Not Found`, `405 Method Not Allowed`, `410 Gone`, and `414 URI Too Long` are cached only when an explicit `max-age` or `Expires` directive is present (no heuristic fallback for error codes).
+- **`Cache-Control: immutable` (RFC 8246)** — responses carrying `immutable` are served from cache without revalidation even when the client sends `no-cache` or the `ForceRevalidate` per-request policy is set, as long as the entry is still fresh. Stale immutable entries are revalidated normally.
+- **`Cache-Control: only-if-cached` (RFC 9111 §5.2.1.7)** — when the client request includes `only-if-cached` and there is no usable cache entry (miss or stale without validator), the middleware returns `504 Gateway Timeout` immediately without contacting the origin.
+- **`CacheEntryJsonConverter` hardening** — the `Read` method now validates the leading `StartObject` token and guards against unexpected token types inside the property loop; unknown future fields are skipped via the `default:` branch. `ETag` and `LastModified` are always written to JSON (as explicit `null` when absent) so round-trips produce a consistent field count.
+- **`MemoryCacheStore` accurate size reporting** — `cacheEntry.Size` now accounts for response headers, `Vary` field names and captured values, and the `ETag` string in addition to the body length, making `MaxCacheSize` enforcement significantly more accurate for responses with large header maps.
+- **HEAD-aware metrics** — `RecordCacheHit` and `RecordRevalidation` now accept an optional `HttpMethod` parameter; when `HEAD` is passed the counter carries an `http.request.method = HEAD` tag dimension, making HEAD traffic distinguishable in dashboards without changing the existing GET counters.
+- **Fix: `Last-Modified` now correctly preserved across cache storage** — `StoreAsync` previously captured `response.Content?.Headers.LastModified` after replacing the content with `ByteArrayContent`, discarding the content headers. The value is now captured before the content swap.
 
 ### v1.0.4
 - **Fix: distributed cache TTL now covers stale-serving windows** — `DistributedCacheStore.Set` previously set `AbsoluteExpiration = ExpiresAt`, causing the backing store (Redis, SQL Server, etc.) to evict entries at the moment they became stale. Entries with `stale-if-error` or `stale-while-revalidate` directives could therefore never be served as stale from a distributed cache. The TTL is now extended by `Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)` beyond `ExpiresAt`, ensuring entries survive until all configured stale windows have elapsed.

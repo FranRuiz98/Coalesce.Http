@@ -88,9 +88,24 @@ public sealed class CoalesceHttpMetrics : IDisposable
             description: "Number of coalesced waiters that timed out and fell back to independent execution.");
     }
 
-    internal void RecordCacheHit() => _cacheHits.Add(1);
+    internal void RecordCacheHit(HttpMethod? method = null)
+    {
+        if (method is null)
+            _cacheHits.Add(1);
+        else
+            _cacheHits.Add(1, new KeyValuePair<string, object?>("http.request.method", method.Method));
+    }
+
     internal void RecordCacheMiss() => _cacheMisses.Add(1);
-    internal void RecordRevalidation() => _cacheRevalidations.Add(1);
+
+    internal void RecordRevalidation(HttpMethod? method = null)
+    {
+        if (method is null)
+            _cacheRevalidations.Add(1);
+        else
+            _cacheRevalidations.Add(1, new KeyValuePair<string, object?>("http.request.method", method.Method));
+    }
+
     internal void RecordStaleErrorServed() => _staleErrorsServed.Add(1);
     internal void RecordStaleWhileRevalidateServed() => _staleWhileRevalidateServed.Add(1);
     internal void RecordCacheInvalidation() => _cacheInvalidations.Add(1);

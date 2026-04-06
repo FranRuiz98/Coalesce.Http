@@ -22,7 +22,7 @@ public sealed class MemoryCacheStore(IMemoryCache memoryCache) : ICacheStore
     {
         using ICacheEntry cacheEntry = memoryCache.CreateEntry(key);
         cacheEntry.Value = entry;
-        cacheEntry.Size = entry.Body.Length;
+        cacheEntry.Size = ComputeSize(entry);
 
         // Use a relative TTL so the eviction deadline is clock-agnostic (works with FakeTimeProvider in tests).
         // The window is the freshness TTL plus the largest configured stale window so entries remain available
@@ -40,6 +40,44 @@ public sealed class MemoryCacheStore(IMemoryCache memoryCache) : ICacheStore
         }
         // evictionTtlSeconds <= 0 (e.g. max-age=0 with no stale window): omit expiration so the entry stays
         // in memory and its ETag / Last-Modified can be used for conditional revalidation (LRU eviction only).
+    }
+
+    /// <summary>
+    /// Computes a size estimate for a cache entry, accounting for body, headers, vary metadata,
+    /// and a fixed per-entry overhead. Used to enforce <see cref="CacheOptions.MaxCacheSize"/>.
+    /// </summary>
+    internal static long ComputeSize(CacheEntry entry)
+    {
+        const int FixedOverhead = 128;
+
+        long size = entry.Body.Length + FixedOverhead;
+
+        foreach (KeyValuePair<string, string[]> header in entry.Headers)
+        {
+            size += header.Key.Length;
+            foreach (string value in header.Value)
+            {
+                size += value.Length;
+            }
+        }
+
+        foreach (string field in entry.VaryFields)
+        {
+            size += field.Length;
+        }
+
+        foreach (KeyValuePair<string, string[]> vary in entry.VaryValues)
+        {
+            size += vary.Key.Length;
+            foreach (string value in vary.Value)
+            {
+                size += value.Length;
+            }
+        }
+
+        size += entry.ETag?.Length ?? 0;
+
+        return size;
     }
 
     /// <inheritdoc/>

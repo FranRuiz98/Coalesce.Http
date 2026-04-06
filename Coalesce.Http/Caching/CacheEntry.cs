@@ -52,6 +52,9 @@ public sealed record CacheEntry
     /// <summary>When <see langword="true"/>, the origin included <c>must-revalidate</c> or <c>proxy-revalidate</c> (RFC 9111 §5.2.2.2), prohibiting the cache from serving a stale response without successful revalidation.</summary>
     public bool MustRevalidate { get; init; }
 
+    /// <summary>When <see langword="true"/>, the origin included <c>Cache-Control: immutable</c> (RFC 8246). A fresh immutable entry must never be revalidated, even when the request carries <c>no-cache</c> or a <c>ForceRevalidate</c> policy.</summary>
+    public bool Immutable { get; init; }
+
     /// <summary>
     /// Determines whether the cache entry has expired based on its expiration time.
     /// </summary>

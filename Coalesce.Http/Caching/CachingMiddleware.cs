@@ -51,29 +51,56 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// <summary>
     /// Determines whether the specified HTTP response can be cached based on its status code and cache control headers.
     /// </summary>
-    /// <remarks>This method checks both the status code and the presence of the 'no-store' directive in the
-    /// response's cache control headers. Responses with 'no-store' are considered not cacheable, even if the status
-    /// code is OK.</remarks>
+    /// <remarks>
+    /// Cacheable status codes (RFC 9111 §3.2):
+    /// <list type="bullet">
+    ///   <item><description>200 OK — always cached (subject to no-store/private guards).</description></item>
+    ///   <item><description>301 Moved Permanently — cached heuristically; uses max-age/Expires or DefaultTtl.</description></item>
+    ///   <item><description>404 Not Found / 405 Method Not Allowed / 410 Gone / 414 URI Too Long — only cached when an
+    ///   explicit max-age or Expires directive is present (no heuristic fallback).</description></item>
+    /// </list>
+    /// </remarks>
     /// <param name="response">The HTTP response message to evaluate for cacheability. Must not be null.</param>
-    /// <returns>true if the response has a status code of OK and does not specify 'no-store' in its cache control headers;
-    /// otherwise, false.</returns>
+    /// <returns>true if the response is cacheable; otherwise, false.</returns>
     private static bool IsResponseCacheable(HttpResponseMessage response)
     {
-        if (response.StatusCode != HttpStatusCode.OK)
-        {
-            return false;
-        }
-
         CacheControlHeaderValue? cacheControl = response.Headers.CacheControl;
 
-        // §5.2.2.5 — no-store: must not cache
+        // §5.2.2.5 — no-store: must not cache regardless of status code
         if (cacheControl?.NoStore == true)
         {
             return false;
         }
 
         // §5.2.2.7 — private: must not store in a shared cache
-        return (cacheControl?.Private) != true;
+        if (cacheControl?.Private == true)
+        {
+            return false;
+        }
+
+        switch (response.StatusCode)
+        {
+            case HttpStatusCode.OK:
+                // 200 is always eligible (guards above already applied)
+                return true;
+
+            case HttpStatusCode.MovedPermanently:
+                // 301: heuristically cacheable — max-age/Expires/DefaultTtl all valid (RFC 9111 §3.2)
+                return true;
+
+            case HttpStatusCode.NotFound:
+            case HttpStatusCode.MethodNotAllowed:
+            case HttpStatusCode.Gone:
+            case HttpStatusCode.RequestUriTooLong:
+                // 404/405/410/414: only cache when an explicit freshness directive is present
+                // (no heuristic fallback — caching indefinite errors is dangerous)
+                return cacheControl?.MaxAge is not null
+                    || cacheControl?.SharedMaxAge is not null
+                    || response.Content?.Headers.Expires is not null;
+
+            default:
+                return false;
+        }
     }
 
     /// <summary>
@@ -116,6 +143,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return;
         }
 
+        // Capture Last-Modified before replacing Content, since ByteArrayContent has no content headers.
+        DateTimeOffset? capturedLastModified = response.Content.Headers.LastModified;
+
         byte[] body = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
 
         response.Content = new ByteArrayContent(body);
@@ -144,13 +174,14 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             Headers = ExtractHeaders(response),
             StoredAt = now,
             ETag = response.Headers.ETag?.Tag,
-            LastModified = response.Content?.Headers.LastModified,
+            LastModified = capturedLastModified,
             VaryFields = varyFields,
             VaryValues = varyValues,
             ExpiresAt = expiresAt,
             StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
             StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
-            MustRevalidate = cc?.MustRevalidate == true || cc?.ProxyRevalidate == true
+            MustRevalidate = cc?.MustRevalidate == true || cc?.ProxyRevalidate == true,
+            Immutable = cc?.Extensions.Any(e => e.Name == "immutable") == true
         };
 
         await cache.SetAsync(key, entry, ct).ConfigureAwait(false);
@@ -159,6 +190,76 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     private static string[] ExtractVaryFields(HttpResponseMessage response)
     {
         return response.Headers.Vary.Count == 0 ? [] : [.. response.Headers.Vary];
+    }
+
+    /// <summary>
+    /// Checks whether the client's conditional GET can be satisfied directly from the cached entry
+    /// and, if so, returns a <c>304 Not Modified</c> response (RFC 9111 §4.3.2 / RFC 9110 §13.1).
+    /// Returns <see langword="null"/> when the condition is not met or no validator is present.
+    /// </summary>
+    /// <remarks>
+    /// <c>If-None-Match</c> takes precedence over <c>If-Modified-Since</c> (RFC 9110 §13.1).
+    /// The 304 includes the headers mandated by RFC 9110 §15.4.5 (ETag, Cache-Control,
+    /// Content-Location, Date, Expires, Vary) and the <c>Age</c> header.
+    /// </remarks>
+    private HttpResponseMessage? TryCreateNotModified(HttpRequestMessage request, CacheEntry entry)
+    {
+        bool hasIfNoneMatch = request.Headers.IfNoneMatch.Count > 0;
+        bool hasIfModifiedSince = request.Headers.IfModifiedSince.HasValue;
+
+        if (!hasIfNoneMatch && !hasIfModifiedSince)
+        {
+            return null;
+        }
+
+        // RFC 9110 §13.1 — If-None-Match takes precedence over If-Modified-Since
+        if (hasIfNoneMatch)
+        {
+            if (entry.ETag is null)
+            {
+                return null;
+            }
+
+            bool matched = false;
+            foreach (EntityTagHeaderValue tag in request.Headers.IfNoneMatch)
+            {
+                // Wildcard "*" matches any ETag
+                if (tag.Tag == "*" || string.Equals(tag.Tag, entry.ETag, StringComparison.Ordinal))
+                {
+                    matched = true;
+                    break;
+                }
+            }
+
+            if (!matched)
+            {
+                return null;
+            }
+        }
+        else
+        {
+            // If-Modified-Since: last modified must be at or before the client's date
+            if (entry.LastModified is null || entry.LastModified > request.Headers.IfModifiedSince!.Value)
+            {
+                return null;
+            }
+        }
+
+        // Build the 304 response with required headers (RFC 9110 §15.4.5)
+        HttpResponseMessage notModified = new(HttpStatusCode.NotModified);
+
+        foreach (string headerName in new[] { "ETag", "Cache-Control", "Content-Location", "Date", "Expires", "Vary" })
+        {
+            if (entry.Headers.TryGetValue(headerName, out string[]? values))
+            {
+                _ = notModified.Headers.TryAddWithoutValidation(headerName, values);
+            }
+        }
+
+        long ageSeconds = Math.Max(0L, (long)(_timeProvider.GetUtcNow() - entry.StoredAt).TotalSeconds);
+        notModified.Headers.Age = new TimeSpan(ageSeconds * TimeSpan.TicksPerSecond);
+
+        return notModified;
     }
 
     private static Dictionary<string, string[]> CaptureVaryValues(HttpRequestMessage request, string[] varyFields)
@@ -237,11 +338,20 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         bool requestNoCache = request.Headers.CacheControl?.NoCache == true
             || (request.Options.TryGetValue(CacheRequestPolicy.ForceRevalidate, out bool forceRevalidate) && forceRevalidate);
 
-        // Fresh cache hit — skip if client demands revalidation (§5.2.1.4)
-        if (entry is not null && !entry.IsExpired(_timeProvider) && !requestNoCache)
+        // Fresh cache hit — skip if client demands revalidation (§5.2.1.4), unless entry is immutable (RFC 8246)
+        if (entry is not null && !entry.IsExpired(_timeProvider) && (!requestNoCache || entry.Immutable))
         {
             metrics?.RecordCacheHit();
             LogCacheHit(key);
+
+            // RFC 9111 §4.3.2 — if the client sent a conditional request whose validator
+            // matches the stored entry, return 304 directly without contacting the origin.
+            HttpResponseMessage? notModified = TryCreateNotModified(request, entry);
+            if (notModified is not null)
+            {
+                return notModified;
+            }
+
             return CreateResponse(entry);
         }
 
@@ -257,12 +367,24 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // Stale entry (or no-cache demand) with a validator → conditional revalidation
         if (entry is not null && (entry.ETag is not null || entry.LastModified is not null))
         {
+            // RFC 9111 §5.2.1.7 — only-if-cached: must not contact origin; return 504
+            if (request.Headers.CacheControl?.OnlyIfCached == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.GatewayTimeout);
+            }
+
             metrics?.RecordRevalidation();
             LogRevalidation(key);
             return await RevalidateAsync(key, entry, request, ct).ConfigureAwait(false);
         }
 
         // Cache miss (or stale without validator) — full request
+        // RFC 9111 §5.2.1.7 — only-if-cached: no usable entry, return 504 immediately
+        if (request.Headers.CacheControl?.OnlyIfCached == true)
+        {
+            return new HttpResponseMessage(HttpStatusCode.GatewayTimeout);
+        }
+
         metrics?.RecordCacheMiss();
         LogCacheMiss(key);
 
@@ -333,10 +455,10 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         bool requestNoCache = request.Headers.CacheControl?.NoCache == true
             || (request.Options.TryGetValue(CacheRequestPolicy.ForceRevalidate, out bool force) && force);
 
-        // Fresh GET entry — serve headers with empty body
-        if (entry is not null && !entry.IsExpired(_timeProvider) && !requestNoCache)
+        // Fresh GET entry — serve headers with empty body; immutable entries ignore no-cache (RFC 8246)
+        if (entry is not null && !entry.IsExpired(_timeProvider) && (!requestNoCache || entry.Immutable))
         {
-            metrics?.RecordCacheHit();
+            metrics?.RecordCacheHit(HttpMethod.Head);
             LogCacheHit(getKey);
             HttpResponseMessage headHit = CreateResponse(entry);
             headHit.Content = new ByteArrayContent([]);
@@ -346,7 +468,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // Stale entry with a validator — conditional HEAD revalidation
         if (entry is not null && (entry.ETag is not null || entry.LastModified is not null))
         {
-            metrics?.RecordRevalidation();
+            metrics?.RecordRevalidation(HttpMethod.Head);
             LogRevalidation(getKey);
 
             if (entry.ETag is not null)
@@ -371,7 +493,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                     MustRevalidate = revalResponse.Headers.CacheControl?.MustRevalidate == true || revalResponse.Headers.CacheControl?.ProxyRevalidate == true
                 };
                 await cache.SetAsync(getKey, refreshed, ct).ConfigureAwait(false);
-                metrics?.RecordCacheHit();
+                metrics?.RecordCacheHit(HttpMethod.Head);
                 HttpResponseMessage headRefreshed = CreateResponse(refreshed);
                 headRefreshed.Content = new ByteArrayContent([]);
                 return headRefreshed;
