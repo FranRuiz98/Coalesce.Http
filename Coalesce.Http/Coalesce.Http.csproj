@@ -2,8 +2,6 @@
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
     <Version>1.1.0</Version>
     <PackageVersion>1.1.0</PackageVersion>
     <Authors>FranRuiz98</Authors>
@@ -25,22 +23,7 @@
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <DebugType>embedded</DebugType>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net8.0|AnyCPU'">
-    <IsAotCompatible>True</IsAotCompatible>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net10.0|AnyCPU'">
-    <IsAotCompatible>True</IsAotCompatible>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net8.0|AnyCPU'">
-    <IsAotCompatible>True</IsAotCompatible>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net10.0|AnyCPU'">
-    <IsAotCompatible>True</IsAotCompatible>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>
@@ -57,7 +40,7 @@
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="9.0.0" PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup>

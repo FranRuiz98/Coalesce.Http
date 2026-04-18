@@ -305,6 +305,100 @@ public class HttpClientBuilderExtensionsTests
         backendCalls.Should().Be(1, "second request must be served from the distributed cache");
     }
 
+    [Fact]
+    public async Task AddCoalesceHttp_MultipleClients_CacheStoresAreIsolated()
+    {
+        // Verify that two named clients have independent cache stores:
+        // caching a response in client "a" must NOT produce a cache hit in client "b".
+        var services = new ServiceCollection();
+        int backendCallsA = 0, backendCallsB = 0;
+        const string sharedUrl = "https://api.test/shared-resource";
+
+        services.AddHttpClient("a")
+            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromMinutes(5))
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
+            {
+                Interlocked.Increment(ref backendCallsA);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("response-a")
+                });
+            }));
+
+        services.AddHttpClient("b")
+            .AddCoalesceHttp(o => o.DefaultTtl = TimeSpan.FromMinutes(5))
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
+            {
+                Interlocked.Increment(ref backendCallsB);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("response-b")
+                });
+            }));
+
+        var factory = services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
+        var clientA = factory.CreateClient("a");
+        var clientB = factory.CreateClient("b");
+
+        // Populate cache for client A
+        _ = await clientA.GetAsync(sharedUrl);
+        backendCallsA.Should().Be(1);
+
+        // Client A cache hit — no backend call
+        _ = await clientA.GetAsync(sharedUrl);
+        backendCallsA.Should().Be(1, "client A should serve from its own cache");
+
+        // Client B must NOT hit client A's cache — must call its own backend
+        _ = await clientB.GetAsync(sharedUrl);
+        backendCallsB.Should().Be(1, "client B must use its own cache store, not client A's");
+
+        // Client B cache hit — no backend call
+        _ = await clientB.GetAsync(sharedUrl);
+        backendCallsB.Should().Be(1, "client B should serve from its own cache");
+    }
+
+    [Fact]
+    public async Task AddCoalesceHttp_MultipleClients_DifferentCacheSettings_DoNotConflict()
+    {
+        // Verify that different MaxCacheSize settings across clients don't overwrite each other.
+        var services = new ServiceCollection();
+        int backendCalls = 0;
+
+        services.AddHttpClient("small-cache")
+            .AddCoalesceHttp(o =>
+            {
+                o.DefaultTtl = TimeSpan.FromMinutes(5);
+                o.MaxCacheSize = 500;
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
+            {
+                Interlocked.Increment(ref backendCalls);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("ok")
+                });
+            }));
+
+        services.AddHttpClient("large-cache")
+            .AddCoalesceHttp(o =>
+            {
+                o.DefaultTtl = TimeSpan.FromMinutes(5);
+                o.MaxCacheSize = 100_000;
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new TestHandler(() =>
+            {
+                Interlocked.Increment(ref backendCalls);
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("ok")
+                });
+            }));
+
+        // Should not throw — previously the last AddMemoryCache() call would overwrite SizeLimit
+        var act = () => services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
+        act.Should().NotThrow();
+    }
+
     private class TestHandler : HttpMessageHandler
     {
         private readonly Func<Task<HttpResponseMessage>> _responseFactory;

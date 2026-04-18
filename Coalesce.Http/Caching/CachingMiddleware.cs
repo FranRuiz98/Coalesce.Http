@@ -148,9 +148,18 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // Capture Last-Modified before replacing Content, since ByteArrayContent has no content headers.
         DateTimeOffset? capturedLastModified = response.Content.Headers.LastModified;
 
+        // Capture all content headers before replacing Content so they survive the swap.
+        List<KeyValuePair<string, IEnumerable<string>>> contentHeaders = [.. response.Content.Headers];
+
         byte[] body = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
 
         response.Content = new ByteArrayContent(body);
+
+        // Restore original content headers (Content-Type, Content-Encoding, etc.)
+        foreach (KeyValuePair<string, IEnumerable<string>> header in contentHeaders)
+        {
+            response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
 
         if (body.Length > options.MaxBodySizeBytes)
         {

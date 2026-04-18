@@ -147,16 +147,31 @@ public static class HttpClientBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        // Remove the default MemoryCacheStore registration so the distributed store takes its place.
-        ServiceDescriptor? existing = builder.Services.FirstOrDefault(
-            d => d.ServiceType == typeof(ICacheStore));
+        string clientName = builder.Name;
 
-        if (existing is not null)
+        // Remove the keyed MemoryCacheStore registration for this client.
+        ServiceDescriptor? existingKeyed = builder.Services.FirstOrDefault(
+            d => d.IsKeyedService && d.ServiceType == typeof(ICacheStore) && Equals(d.ServiceKey, clientName));
+
+        if (existingKeyed is not null)
         {
-            builder.Services.Remove(existing);
+            builder.Services.Remove(existingKeyed);
         }
 
-        builder.Services.AddSingleton<ICacheStore, DistributedCacheStore>();
+        // Remove the non-keyed fallback so it can be re-registered pointing to the new store.
+        ServiceDescriptor? existingNonKeyed = builder.Services.FirstOrDefault(
+            d => !d.IsKeyedService && d.ServiceType == typeof(ICacheStore));
+
+        if (existingNonKeyed is not null)
+        {
+            builder.Services.Remove(existingNonKeyed);
+        }
+
+        builder.Services.AddKeyedSingleton<ICacheStore>(clientName, (sp, _) =>
+            new DistributedCacheStore(sp.GetRequiredService<IDistributedCache>()));
+
+        builder.Services.AddSingleton<ICacheStore>(sp =>
+            sp.GetRequiredKeyedService<ICacheStore>(clientName));
 
         return builder;
     }
@@ -198,20 +213,41 @@ public static class HttpClientBuilderExtensions
         CacheOptions options = new();
         configure?.Invoke(options);
 
-        builder.Services.AddMemoryCache(memoryOptions =>
-        {
-            if (options.MaxCacheSize is long sizeLimit)
+        string clientName = builder.Name;
+
+        // Per-client IMemoryCache — avoids SizeLimit conflicts across named clients.
+        builder.Services.TryAdd(
+            ServiceDescriptor.KeyedSingleton<IMemoryCache>(clientName, (_, _) =>
             {
-                memoryOptions.SizeLimit = sizeLimit;
-            }
-        });
-        builder.Services.TryAddSingleton<ICacheKeyBuilder>(_ => new DefaultCacheKeyBuilder(options.NormalizeQueryParameters));
-        builder.Services.TryAddSingleton<ICacheStore, MemoryCacheStore>();
+                MemoryCacheOptions memOpts = new();
+                if (options.MaxCacheSize is long sizeLimit)
+                {
+                    memOpts.SizeLimit = sizeLimit;
+                }
+
+                return new MemoryCache(memOpts);
+            }));
+
+        // Per-client cache key builder — NormalizeQueryParameters can differ per client.
+        builder.Services.TryAdd(
+            ServiceDescriptor.KeyedSingleton<ICacheKeyBuilder>(clientName, (_, _) =>
+                new DefaultCacheKeyBuilder(options.NormalizeQueryParameters)));
+
+        // Per-client cache store backed by the client's own IMemoryCache.
+        builder.Services.TryAdd(
+            ServiceDescriptor.KeyedSingleton<ICacheStore>(clientName, (sp, _) =>
+                new MemoryCacheStore(sp.GetRequiredKeyedService<IMemoryCache>(clientName))));
+
+        // Backward compatibility: non-keyed resolution returns the first-registered client's services.
+        builder.Services.TryAddSingleton<ICacheKeyBuilder>(sp =>
+            sp.GetRequiredKeyedService<ICacheKeyBuilder>(clientName));
+        builder.Services.TryAddSingleton<ICacheStore>(sp =>
+            sp.GetRequiredKeyedService<ICacheStore>(clientName));
 
         _ = builder.AddHttpMessageHandler(sp =>
             new CachingMiddleware(
-                sp.GetRequiredService<ICacheStore>(),
-                sp.GetRequiredService<ICacheKeyBuilder>(),
+                sp.GetRequiredKeyedService<ICacheStore>(clientName),
+                sp.GetRequiredKeyedService<ICacheKeyBuilder>(clientName),
                 options,
                 sp.GetService<CoalesceHttpMetrics>(),
                 sp.GetService<ILoggerFactory>()?.CreateLogger<CachingMiddleware>(),
