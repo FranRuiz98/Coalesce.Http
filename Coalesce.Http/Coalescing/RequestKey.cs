@@ -48,7 +48,11 @@ internal readonly record struct RequestKey(string Method, string Url, string Hea
         System.Text.StringBuilder sb = new();
         foreach (string name in sorted)
         {
-            sb.Append(name.ToLowerInvariant());
+            // Use stackalloc to lowercase the header name without a heap allocation.
+            // Header names are short ASCII identifiers, so 256 chars is a safe upper bound.
+            Span<char> lower = stackalloc char[name.Length];
+            MemoryExtensions.ToLowerInvariant(name.AsSpan(), lower);
+            sb.Append(lower);
             sb.Append('=');
             if (request.Headers.TryGetValues(name, out IEnumerable<string>? values))
             {

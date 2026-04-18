@@ -67,7 +67,7 @@ internal static class FreshnessCalculator
             {
                 if (ext.Name.Equals("stale-if-error", StringComparison.OrdinalIgnoreCase))
                 {
-                    string? raw = ext.Value?.Trim('"');
+                    ReadOnlySpan<char> raw = ext.Value.AsSpan().Trim('"');
                     if (long.TryParse(raw, out long seconds) && seconds >= 0)
                     {
                         return seconds;
@@ -99,7 +99,7 @@ internal static class FreshnessCalculator
             {
                 if (ext.Name.Equals("stale-while-revalidate", StringComparison.OrdinalIgnoreCase))
                 {
-                    string? raw = ext.Value?.Trim('"');
+                    ReadOnlySpan<char> raw = ext.Value.AsSpan().Trim('"');
                     if (long.TryParse(raw, out long seconds) && seconds >= 0)
                     {
                         return seconds;

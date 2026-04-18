@@ -14,6 +14,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                                         ILogger<CachingMiddleware>? logger = null,
                                         TimeProvider? timeProvider = null) : DelegatingHandler
 {
+    private static readonly string[] _notModifiedHeaders = ["ETag", "Cache-Control", "Content-Location", "Date", "Expires", "Vary"];
+
     private readonly ILogger logger = logger ?? NullLogger<CachingMiddleware>.Instance;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ConcurrentDictionary<string, Task> _backgroundRevalidations = new(StringComparer.Ordinal);
@@ -181,7 +183,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
             StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
             MustRevalidate = cc?.MustRevalidate == true || cc?.ProxyRevalidate == true,
-            Immutable = cc?.Extensions.Any(e => e.Name == "immutable") == true
+            Immutable = IsImmutableEntry(cc)
         };
 
         await cache.SetAsync(key, entry, ct).ConfigureAwait(false);
@@ -190,6 +192,24 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     private static string[] ExtractVaryFields(HttpResponseMessage response)
     {
         return response.Headers.Vary.Count == 0 ? [] : [.. response.Headers.Vary];
+    }
+
+    private static bool IsImmutableEntry(CacheControlHeaderValue? cc)
+    {
+        if (cc is null)
+        {
+            return false;
+        }
+
+        foreach (NameValueHeaderValue ext in cc.Extensions)
+        {
+            if (ext.Name == "immutable")
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -248,7 +268,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // Build the 304 response with required headers (RFC 9110 §15.4.5)
         HttpResponseMessage notModified = new(HttpStatusCode.NotModified);
 
-        foreach (string headerName in new[] { "ETag", "Cache-Control", "Content-Location", "Date", "Expires", "Vary" })
+        foreach (string headerName in _notModifiedHeaders)
         {
             if (entry.Headers.TryGetValue(headerName, out string[]? values))
             {
