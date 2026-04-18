@@ -1,4 +1,6 @@
-﻿namespace Coalesce.Http.Coalescing;
+﻿using System.Buffers;
+
+namespace Coalesce.Http.Coalescing;
 
 internal readonly record struct RequestKey(string Method, string Url, string HeadersKey = "")
 {
@@ -42,25 +44,86 @@ internal readonly record struct RequestKey(string Method, string Url, string Hea
     /// </summary>
     private static string BuildHeadersKey(HttpRequestMessage request, IReadOnlyList<string> headers)
     {
-        // Sort names so that ["B","A"] and ["A","B"] produce identical keys
-        string[] sorted = [.. headers.Order(StringComparer.OrdinalIgnoreCase)];
+        int count = headers.Count;
 
-        System.Text.StringBuilder sb = new();
-        foreach (string name in sorted)
+        // Rent a buffer from the pool to sort header names without a heap allocation.
+        string[] rented = ArrayPool<string>.Shared.Rent(count);
+        try
         {
-            // Use stackalloc to lowercase the header name without a heap allocation.
-            // Header names are short ASCII identifiers, so 256 chars is a safe upper bound.
-            Span<char> lower = stackalloc char[name.Length];
-            MemoryExtensions.ToLowerInvariant(name.AsSpan(), lower);
-            sb.Append(lower);
-            sb.Append('=');
-            if (request.Headers.TryGetValues(name, out IEnumerable<string>? values))
+            for (int i = 0; i < count; i++)
             {
-                sb.AppendJoin(',', values);
+                rented[i] = headers[i];
             }
-            sb.Append(';');
-        }
 
-        return sb.ToString();
+            rented.AsSpan(0, count).Sort(StringComparer.OrdinalIgnoreCase);
+
+            // --- Pass 1: compute exact char length needed ---
+            // Format per header: <lowercase-name> '=' [v1 ',' v2 ...] ';'
+            int totalLength = 0;
+            for (int i = 0; i < count; i++)
+            {
+                totalLength += rented[i].Length + 2; // name + '=' + ';'
+                if (request.Headers.TryGetValues(rented[i], out IEnumerable<string>? vals))
+                {
+                    bool first = true;
+                    foreach (string v in vals)
+                    {
+                        if (!first) totalLength++; // ','
+                        totalLength += v.Length;
+                        first = false;
+                    }
+                }
+            }
+
+            // --- Pass 2: write into a char buffer ---
+            // stackalloc covers the common case (short header keys) with zero heap allocation.
+            // ArrayPool<char> is the fallback for unusually long composite keys.
+            const int StackAllocThreshold = 512;
+            char[]? charRented = null;
+            Span<char> buffer = totalLength <= StackAllocThreshold
+                ? stackalloc char[totalLength]
+                : (charRented = ArrayPool<char>.Shared.Rent(totalLength)).AsSpan(0, totalLength);
+
+            try
+            {
+                int pos = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    string name = rented[i];
+
+                    // Lowercase the header name directly into the output buffer — no intermediate allocation.
+                    MemoryExtensions.ToLowerInvariant(name.AsSpan(), buffer.Slice(pos, name.Length));
+                    pos += name.Length;
+                    buffer[pos++] = '=';
+
+                    if (request.Headers.TryGetValues(name, out IEnumerable<string>? values))
+                    {
+                        bool first = true;
+                        foreach (string v in values)
+                        {
+                            if (!first) buffer[pos++] = ',';
+                            v.AsSpan().CopyTo(buffer.Slice(pos, v.Length));
+                            pos += v.Length;
+                            first = false;
+                        }
+                    }
+
+                    buffer[pos++] = ';';
+                }
+
+                return new string(buffer);
+            }
+            finally
+            {
+                if (charRented is not null)
+                {
+                    ArrayPool<char>.Shared.Return(charRented);
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<string>.Shared.Return(rented, clearArray: true);
+        }
     }
 }

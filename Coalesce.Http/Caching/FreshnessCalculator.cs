@@ -110,4 +110,68 @@ internal static class FreshnessCalculator
 
         return options.DefaultStaleWhileRevalidateSeconds;
     }
+
+    /// <summary>
+    /// Extracts both <c>stale-if-error</c> and <c>stale-while-revalidate</c> in a single pass over
+    /// <see cref="CacheControlHeaderValue.Extensions"/>, avoiding the double-iteration overhead when
+    /// both values are needed simultaneously (e.g. during cache storage).
+    /// </summary>
+    /// <param name="response">The HTTP response message to inspect.</param>
+    /// <param name="options">The cache options providing fallback values.</param>
+    /// <param name="staleIfError">
+    /// Receives the effective <c>stale-if-error</c> seconds, or
+    /// <see cref="CacheOptions.DefaultStaleIfErrorSeconds"/> when the directive is absent.
+    /// </param>
+    /// <param name="staleWhileRevalidate">
+    /// Receives the effective <c>stale-while-revalidate</c> seconds, or
+    /// <see cref="CacheOptions.DefaultStaleWhileRevalidateSeconds"/> when the directive is absent.
+    /// </param>
+    public static void ExtractStaleExtensions(
+        HttpResponseMessage response,
+        CacheOptions options,
+        out long staleIfError,
+        out long staleWhileRevalidate)
+    {
+        staleIfError = -1L;
+        staleWhileRevalidate = -1L;
+
+        CacheControlHeaderValue? cc = response.Headers.CacheControl;
+        if (cc is not null)
+        {
+            foreach (NameValueHeaderValue ext in cc.Extensions)
+            {
+                if (staleIfError < 0 && ext.Name.Equals("stale-if-error", StringComparison.OrdinalIgnoreCase))
+                {
+                    ReadOnlySpan<char> raw = ext.Value.AsSpan().Trim('"');
+                    if (long.TryParse(raw, out long s) && s >= 0)
+                    {
+                        staleIfError = s;
+                    }
+                }
+                else if (staleWhileRevalidate < 0 && ext.Name.Equals("stale-while-revalidate", StringComparison.OrdinalIgnoreCase))
+                {
+                    ReadOnlySpan<char> raw = ext.Value.AsSpan().Trim('"');
+                    if (long.TryParse(raw, out long s) && s >= 0)
+                    {
+                        staleWhileRevalidate = s;
+                    }
+                }
+
+                if (staleIfError >= 0 && staleWhileRevalidate >= 0)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (staleIfError < 0)
+        {
+            staleIfError = options.DefaultStaleIfErrorSeconds;
+        }
+
+        if (staleWhileRevalidate < 0)
+        {
+            staleWhileRevalidate = options.DefaultStaleWhileRevalidateSeconds;
+        }
+    }
 }

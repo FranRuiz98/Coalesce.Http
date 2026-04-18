@@ -169,6 +169,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         string[] varyFields = ExtractVaryFields(response);
         IReadOnlyDictionary<string, string[]> varyValues = CaptureVaryValues(request, varyFields);
 
+        FreshnessCalculator.ExtractStaleExtensions(response, options, out long staleIfError, out long staleWhileRevalidate);
+
         CacheEntry entry = new()
         {
             StatusCode = (int)response.StatusCode,
@@ -180,8 +182,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             VaryFields = varyFields,
             VaryValues = varyValues,
             ExpiresAt = expiresAt,
-            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
-            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
+            StaleIfErrorSeconds = staleIfError,
+            StaleWhileRevalidateSeconds = staleWhileRevalidate,
             MustRevalidate = cc?.MustRevalidate == true || cc?.ProxyRevalidate == true,
             Immutable = IsImmutableEntry(cc)
         };

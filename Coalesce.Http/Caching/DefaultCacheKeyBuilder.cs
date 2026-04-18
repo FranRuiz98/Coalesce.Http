@@ -45,12 +45,18 @@ public sealed class DefaultCacheKeyBuilder(bool normalizeQueryParameters = false
         }
 
         // Split on '&', sort, reassemble — avoids regex and LINQ allocations
-        string[] pairs = query.TrimStart('?').Split('&');
+        string[] pairs = query.AsSpan(1).ToString().Split('&');
         Array.Sort(pairs, StringComparer.Ordinal);
 
-        return string.Concat(
-            uri.GetLeftPart(UriPartial.Path),
-            "?",
-            string.Join('&', pairs));
+        string path = uri.GetLeftPart(UriPartial.Path);
+        string joined = string.Join('&', pairs);
+
+        // Build the result in a single allocation: path + '?' + joined
+        return string.Create(path.Length + 1 + joined.Length, (path, joined), static (span, state) =>
+        {
+            state.path.AsSpan().CopyTo(span);
+            span[state.path.Length] = '?';
+            state.joined.AsSpan().CopyTo(span[(state.path.Length + 1)..]);
+        });
     }
 }
