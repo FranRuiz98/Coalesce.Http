@@ -2,25 +2,36 @@
 using Coalesce.Http.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace Coalesce.Http.Handlers;
 
 internal sealed partial class CoalescingHandler(RequestCoalescer coalescer,
-                                                CoalescerOptions? options = null,
+                                                IOptionsMonitor<CoalescerOptions> optionsMonitor,
+                                                string clientName,
                                                 ILogger<CoalescingHandler>? logger = null) : DelegatingHandler
 {
     private readonly ILogger logger = logger ?? NullLogger<CoalescingHandler>.Instance;
+
+    private CoalescerOptions Options => optionsMonitor.Get(clientName);
+
+    /// <summary>
+    /// Convenience constructor for testing — wraps a static options instance.
+    /// </summary>
+    internal CoalescingHandler(RequestCoalescer coalescer, CoalescerOptions? options = null, ILogger<CoalescingHandler>? logger = null)
+        : this(coalescer, new StaticOptionsMonitor<CoalescerOptions>(options ?? new()), string.Empty, logger) { }
+
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         // Bypass coalescing when disabled, for non-coalesceable methods, or when the per-request policy opts out
-        if (options?.Enabled == false || !IsCoalesceableMethod(request.Method) || IsBypassRequested(request))
+        if (Options.Enabled == false || !IsCoalesceableMethod(request.Method) || IsBypassRequested(request))
         {
             LogBypassed(request.Method, request.RequestUri);
             return base.SendAsync(request, cancellationToken);
         }
 
         return coalescer.ExecuteAsync(
-            RequestKey.Create(request, options?.CoalesceKeyHeaders),
+            RequestKey.Create(request, Options.CoalesceKeyHeaders),
             () => base.SendAsync(request, CancellationToken.None),
             cancellationToken);
     }

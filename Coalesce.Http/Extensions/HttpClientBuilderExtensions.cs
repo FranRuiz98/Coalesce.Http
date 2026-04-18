@@ -8,6 +8,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Coalesce.Http.Extensions;
 
@@ -85,9 +86,12 @@ public static class HttpClientBuilderExtensions
 
         AddHttpCache(builder, configureCaching);
 
-        CoalescerOptions coalescerOptions = new();
-        configureCoalescing?.Invoke(coalescerOptions);
-        AddCoalescing(builder, coalescerOptions);
+        if (configureCoalescing is not null)
+        {
+            _ = builder.Services.Configure<CoalescerOptions>(builder.Name, configureCoalescing);
+        }
+
+        AddCoalescing(builder);
 
         return builder;
     }
@@ -122,9 +126,12 @@ public static class HttpClientBuilderExtensions
 
         builder.Services.TryAddSingleton<CoalesceHttpMetrics>();
 
-        CoalescerOptions options = new();
-        configure?.Invoke(options);
-        AddCoalescing(builder, options);
+        if (configure is not null)
+        {
+            _ = builder.Services.Configure<CoalescerOptions>(builder.Name, configure);
+        }
+
+        AddCoalescing(builder);
 
         return builder;
     }
@@ -164,7 +171,7 @@ public static class HttpClientBuilderExtensions
 
         if (existingKeyed is not null)
         {
-            builder.Services.Remove(existingKeyed);
+            _ = builder.Services.Remove(existingKeyed);
         }
 
         // Remove the non-keyed fallback so it can be re-registered pointing to the new store.
@@ -173,20 +180,22 @@ public static class HttpClientBuilderExtensions
 
         if (existingNonKeyed is not null)
         {
-            builder.Services.Remove(existingNonKeyed);
+            _ = builder.Services.Remove(existingNonKeyed);
         }
 
-        builder.Services.AddKeyedSingleton<ICacheStore>(clientName, (sp, _) =>
+        _ = builder.Services.AddKeyedSingleton<ICacheStore>(clientName, (sp, _) =>
             new DistributedCacheStore(sp.GetRequiredService<IDistributedCache>()));
 
-        builder.Services.AddSingleton<ICacheStore>(sp =>
+        _ = builder.Services.AddSingleton<ICacheStore>(sp =>
             sp.GetRequiredKeyedService<ICacheStore>(clientName));
 
         return builder;
     }
 
-    private static void AddCoalescing(IHttpClientBuilder builder, CoalescerOptions coalescerOptions)
+    private static void AddCoalescing(IHttpClientBuilder builder)
     {
+        string clientName = builder.Name;
+
         // Each call captures its own RequestCoalescer in the closure so that
         // duplicate AddCoalesceHttp() calls produce independent coalescing scopes
         // and don't deadlock through shared inflight state.
@@ -204,7 +213,8 @@ public static class HttpClientBuilderExtensions
                 lock (coalescerLock)
                 {
                     coalescer ??= new RequestCoalescer(
-                        coalescerOptions,
+                        sp.GetRequiredService<IOptionsMonitor<CoalescerOptions>>(),
+                        clientName,
                         sp.GetService<CoalesceHttpMetrics>(),
                         sp.GetService<ILoggerFactory>()?.CreateLogger<RequestCoalescer>());
                 }
@@ -212,24 +222,33 @@ public static class HttpClientBuilderExtensions
 
             return new CoalescingHandler(
                 coalescer,
-                coalescerOptions,
+                sp.GetRequiredService<IOptionsMonitor<CoalescerOptions>>(),
+                clientName,
                 sp.GetService<ILoggerFactory>()?.CreateLogger<CoalescingHandler>());
         });
     }
 
     private static void AddHttpCache(IHttpClientBuilder builder, Action<CacheOptions>? configure)
     {
-        CacheOptions options = new();
-        configure?.Invoke(options);
-
         string clientName = builder.Name;
+
+        // Register named options for runtime reconfiguration via IOptionsMonitor<CacheOptions>.
+        if (configure is not null)
+        {
+            _ = builder.Services.Configure<CacheOptions>(clientName, configure);
+        }
+
+        // Read structural options eagerly — MaxCacheSize and NormalizeQueryParameters configure
+        // IMemoryCache and ICacheKeyBuilder at creation time and cannot change at runtime.
+        CacheOptions structuralOptions = new();
+        configure?.Invoke(structuralOptions);
 
         // Per-client IMemoryCache — avoids SizeLimit conflicts across named clients.
         builder.Services.TryAdd(
             ServiceDescriptor.KeyedSingleton<IMemoryCache>(clientName, (_, _) =>
             {
                 MemoryCacheOptions memOpts = new();
-                if (options.MaxCacheSize is long sizeLimit)
+                if (structuralOptions.MaxCacheSize is long sizeLimit)
                 {
                     memOpts.SizeLimit = sizeLimit;
                 }
@@ -240,7 +259,7 @@ public static class HttpClientBuilderExtensions
         // Per-client cache key builder — NormalizeQueryParameters can differ per client.
         builder.Services.TryAdd(
             ServiceDescriptor.KeyedSingleton<ICacheKeyBuilder>(clientName, (_, _) =>
-                new DefaultCacheKeyBuilder(options.NormalizeQueryParameters)));
+                new DefaultCacheKeyBuilder(structuralOptions.NormalizeQueryParameters)));
 
         // Per-client cache store backed by the client's own IMemoryCache.
         builder.Services.TryAdd(
@@ -257,10 +276,10 @@ public static class HttpClientBuilderExtensions
             new CachingMiddleware(
                 sp.GetRequiredKeyedService<ICacheStore>(clientName),
                 sp.GetRequiredKeyedService<ICacheKeyBuilder>(clientName),
-                options,
+                sp.GetRequiredService<IOptionsMonitor<CacheOptions>>(),
+                clientName,
                 sp.GetService<CoalesceHttpMetrics>(),
                 sp.GetService<ILoggerFactory>()?.CreateLogger<CachingMiddleware>(),
                 sp.GetService<TimeProvider>()));
     }
 }
-

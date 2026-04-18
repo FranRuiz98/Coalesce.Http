@@ -1,6 +1,8 @@
 ﻿using Coalesce.Http.Metrics;
+using Coalesce.Http.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
@@ -9,7 +11,8 @@ namespace Coalesce.Http.Caching;
 
 internal sealed partial class CachingMiddleware(ICacheStore cache,
                                         ICacheKeyBuilder keyBuilder,
-                                        CacheOptions options,
+                                        IOptionsMonitor<CacheOptions> optionsMonitor,
+                                        string clientName,
                                         CoalesceHttpMetrics? metrics = null,
                                         ILogger<CachingMiddleware>? logger = null,
                                         TimeProvider? timeProvider = null) : DelegatingHandler
@@ -19,6 +22,15 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     private readonly ILogger logger = logger ?? NullLogger<CachingMiddleware>.Instance;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ConcurrentDictionary<string, Task> _backgroundRevalidations = new(StringComparer.Ordinal);
+
+    private CacheOptions Options => optionsMonitor.Get(clientName);
+
+    /// <summary>
+    /// Convenience constructor for testing — wraps a static options instance.
+    /// </summary>
+    internal CachingMiddleware(ICacheStore cache, ICacheKeyBuilder keyBuilder, CacheOptions options,
+        CoalesceHttpMetrics? metrics = null, ILogger<CachingMiddleware>? logger = null, TimeProvider? timeProvider = null)
+        : this(cache, keyBuilder, new StaticOptionsMonitor<CacheOptions>(options), string.Empty, metrics, logger, timeProvider) { }
 
     /// <summary>
     /// Determines whether the specified HTTP request is eligible for caching based on its method, headers, and content.
@@ -164,7 +176,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
 
-        if (body.Length > options.MaxBodySizeBytes)
+        if (body.Length > Options.MaxBodySizeBytes)
         {
             return;
         }
@@ -175,13 +187,13 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // §5.2.2.4 — no-cache: store but mark as immediately stale to force revalidation on every use
         DateTimeOffset expiresAt = cc?.NoCache == true
             ? now
-            : FreshnessCalculator.ComputeExpiresAt(response, options, _timeProvider);
+            : FreshnessCalculator.ComputeExpiresAt(response, Options, _timeProvider);
 
         // §4.1 — Vary: capture field names and the corresponding request header values
         string[] varyFields = ExtractVaryFields(response);
         IReadOnlyDictionary<string, string[]> varyValues = CaptureVaryValues(request, varyFields);
 
-        FreshnessCalculator.ExtractStaleExtensions(response, options, out long staleIfError, out long staleWhileRevalidate);
+        FreshnessCalculator.ExtractStaleExtensions(response, Options, out long staleIfError, out long staleWhileRevalidate);
 
         CacheEntry entry = new()
         {
@@ -521,9 +533,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             {
                 CacheEntry refreshed = entry with
                 {
-                    ExpiresAt = FreshnessCalculator.ComputeExpiresAt(revalResponse, options, _timeProvider),
-                    StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(revalResponse, options),
-                    StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(revalResponse, options),
+                    ExpiresAt = FreshnessCalculator.ComputeExpiresAt(revalResponse, Options, _timeProvider),
+                    StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(revalResponse, Options),
+                    StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(revalResponse, Options),
                     MustRevalidate = revalResponse.Headers.CacheControl?.MustRevalidate == true || revalResponse.Headers.CacheControl?.ProxyRevalidate == true
                 };
                 await cache.SetAsync(getKey, refreshed, ct).ConfigureAwait(false);
@@ -633,9 +645,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             CacheEntry refreshed = entry with
             {
-                ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options, _timeProvider),
-                StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
-                StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
+                ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, Options, _timeProvider),
+                StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, Options),
+                StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, Options),
                 MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
             };
             await cache.SetAsync(key, refreshed, ct).ConfigureAwait(false);
@@ -711,9 +723,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                     {
                         CacheEntry refreshed = entry with
                         {
-                            ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, options, _timeProvider),
-                            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, options),
-                            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, options),
+                            ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, Options, _timeProvider),
+                            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, Options),
+                            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, Options),
                             MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
                         };
                         await cache.SetAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);

@@ -2,6 +2,7 @@
 using Coalesce.Http.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 
 namespace Coalesce.Http.Coalescing;
@@ -10,10 +11,18 @@ namespace Coalesce.Http.Coalescing;
 /// High-performance request coalescer using TaskCompletionSource pattern.
 /// This implementation minimizes allocations and contention under extreme load (100k+ RPS).
 /// </summary>
-internal sealed partial class RequestCoalescer(CoalescerOptions options, CoalesceHttpMetrics? metrics = null, ILogger<RequestCoalescer>? logger = null)
+internal sealed partial class RequestCoalescer(IOptionsMonitor<CoalescerOptions> optionsMonitor, string clientName, CoalesceHttpMetrics? metrics = null, ILogger<RequestCoalescer>? logger = null)
 {
     private readonly ILogger logger = logger ?? NullLogger<RequestCoalescer>.Instance;
     private readonly ConcurrentDictionary<RequestKey, CoalescedRequest> _inflight = new();
+
+    private CoalescerOptions Options => optionsMonitor.Get(clientName);
+
+    /// <summary>
+    /// Convenience constructor for testing — wraps a static options instance.
+    /// </summary>
+    internal RequestCoalescer(CoalescerOptions options, CoalesceHttpMetrics? metrics = null, ILogger<RequestCoalescer>? logger = null)
+        : this(new StaticOptionsMonitor<CoalescerOptions>(options), string.Empty, metrics, logger) { }
 
     /// <summary>
     /// Executes a request with coalescing. Multiple concurrent calls with the same key
@@ -37,7 +46,7 @@ internal sealed partial class RequestCoalescer(CoalescerOptions options, Coalesc
 
                 try
                 {
-                    CachedResponse cachedResponse = options.CoalescingTimeout is TimeSpan timeout
+                    CachedResponse cachedResponse = Options.CoalescingTimeout is TimeSpan timeout
                         ? await existing.Tcs.Task
                             .WaitAsync(timeout, cancellationToken)
                             .ConfigureAwait(false)
@@ -82,7 +91,7 @@ internal sealed partial class RequestCoalescer(CoalescerOptions options, Coalesc
                 // poison the shared TCS — if body reading were cancelled here, the OperationCanceledException
                 // would propagate to ALL waiters via SetException, even though their tokens were not cancelled.
                 CachedResponse cachedResponse = await CachedResponse
-                    .FromResponseAsync(response, options.MaxResponseBodyBytes, CancellationToken.None)
+                    .FromResponseAsync(response, Options.MaxResponseBodyBytes, CancellationToken.None)
                     .ConfigureAwait(false);
 
                 coalescedRequest.Tcs.SetResult(cachedResponse);
@@ -112,7 +121,7 @@ internal sealed partial class RequestCoalescer(CoalescerOptions options, Coalesc
         // Timeout fallback: execute the factory independently (no coalescing)
         LogTimeoutFallbackStart(key);
         using HttpResponseMessage fallbackResponse = await factory().ConfigureAwait(false);
-        CachedResponse fallbackCached = await CachedResponse.FromResponseAsync(fallbackResponse, options.MaxResponseBodyBytes, cancellationToken).ConfigureAwait(false);
+        CachedResponse fallbackCached = await CachedResponse.FromResponseAsync(fallbackResponse, Options.MaxResponseBodyBytes, cancellationToken).ConfigureAwait(false);
         return fallbackCached.ToHttpResponseMessage();
     }
 
