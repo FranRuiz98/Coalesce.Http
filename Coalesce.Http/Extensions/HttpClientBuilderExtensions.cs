@@ -62,6 +62,15 @@ public static class HttpClientBuilderExtensions
     /// and Rule 3 (hedged attempts receive independent <see cref="HttpRequestMessage"/> instances).
     /// </para>
     /// </remarks>
+    /// <para>
+    /// To normalize query-parameter ordering so that <c>/items?b=2&amp;a=1</c> and
+    /// <c>/items?a=1&amp;b=2</c> share the same cache entry, enable
+    /// <see cref="CacheOptions.NormalizeQueryParameters"/>:
+    /// </para>
+    /// <code>
+    /// services.AddHttpClient("catalog")
+    ///     .AddCoalesceHttp(cache => cache.NormalizeQueryParameters = true);
+    /// </code>
     /// <param name="builder">The <see cref="IHttpClientBuilder"/> to configure.</param>
     /// <param name="configureCaching">An optional action to configure <see cref="CacheOptions"/>.</param>
     /// <param name="configureCoalescing">An optional action to configure <see cref="CoalescerOptions"/>.</param>

@@ -121,7 +121,10 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         foreach (KeyValuePair<string, string[]> header in entry.Headers)
         {
-            _ = response.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            if (!response.Headers.TryAddWithoutValidation(header.Key, header.Value))
+            {
+                response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
         }
 
         // §5.1 — Age: elapsed seconds since the response was stored

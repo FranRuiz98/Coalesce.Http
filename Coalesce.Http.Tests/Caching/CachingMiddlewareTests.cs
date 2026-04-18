@@ -434,6 +434,40 @@ public sealed class CachingMiddlewareTests
             "If-Modified-Since must be set from the stored LastModified when no ETag is present");
     }
 
+    // ── Content-header preservation ──────────────────────────────────────────
+
+    [Fact]
+    public async Task CachedResponse_PreservesContentHeaders_AfterStoreAndRetrieve()
+    {
+        (CachingMiddleware middleware, _) = BuildPipeline(_ =>
+        {
+            HttpResponseMessage r = new(HttpStatusCode.OK)
+            {
+                Content = new StringContent("compressed", System.Text.Encoding.UTF8, "application/json")
+            };
+            r.Content.Headers.ContentEncoding.Add("gzip");
+            return r;
+        });
+
+        HttpMessageInvoker invoker = Invoker(middleware);
+
+        // First request → stores in cache
+        HttpResponseMessage first = await invoker.SendAsync(
+            new HttpRequestMessage(HttpMethod.Get, "https://api.test/content-headers"), CancellationToken.None);
+
+        first.Content.Headers.ContentType!.MediaType.Should().Be("application/json");
+        first.Content.Headers.ContentEncoding.Should().Contain("gzip");
+
+        // Second request → served from cache
+        HttpResponseMessage cached = await invoker.SendAsync(
+            new HttpRequestMessage(HttpMethod.Get, "https://api.test/content-headers"), CancellationToken.None);
+
+        cached.Content.Headers.ContentType!.MediaType.Should().Be("application/json",
+            "Content-Type must survive the cache round-trip");
+        cached.Content.Headers.ContentEncoding.Should().Contain("gzip",
+            "Content-Encoding must survive the cache round-trip");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static HttpResponseMessage OkResponse(string body) =>
