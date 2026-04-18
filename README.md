@@ -1,56 +1,23 @@
 # Coalesce.Http
 
-> Advanced HTTP pipeline extensions for .NET — request coalescing, RFC 9111 caching, and seamless Polly integration.
+> RFC 9111 HTTP caching and request coalescing for the .NET `HttpClient` pipeline.
 
+[![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
-[![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
-[![Tests](https://img.shields.io/badge/tests-315%20passed-brightgreen)](#running-the-tests)
-[![NuGet](https://img.shields.io/badge/version-1.1.0-blue)](#changelog)
+[![Tests](https://img.shields.io/badge/tests-318%20passed-brightgreen)](#running-the-tests)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
-**Coalesce.Http** is a .NET library that extends the `HttpClient` pipeline to solve common problems in high-concurrency distributed systems:
+**Coalesce.Http** is a thin, composable `DelegatingHandler` layer that adds caching and request deduplication to any named `HttpClient`. It does not replace `HttpClient` or Polly — it slots right into the existing pipeline.
 
-| Problem | Solution |
+| Problem | What Coalesce.Http does |
 |---|---|
-| Thundering-herd of duplicate concurrent requests | **Request coalescing** collapses them into a single backend call |
-| Repeated fetches for unchanged resources | **RFC 9111 caching** with conditional revalidation (`ETag`, `If-None-Match`) |
-| Cache stampede on expiry | Coalescing prevents multiple simultaneous origin calls when an entry expires |
+| Thundering herd of duplicate concurrent requests | **Coalesces** them into a single backend call |
+| Repeated fetches for unchanged resources | **RFC 9111 caching** with ETag/Last-Modified revalidation |
+| Cache stampede on expiry | Coalescing prevents multiple simultaneous origin calls |
 | Stale data during origin failures | **stale-if-error** (RFC 5861 §4) serves cached responses while the origin recovers |
-| High origin latency visible on cache expiry | **stale-while-revalidate** (RFC 5861 §3) serves stale instantly and refreshes in background |
-| Mutating requests leaving stale GET entries | **Unsafe method invalidation** (RFC 9111 §4.4) evicts affected entries automatically |
-| Unsafe retries / tail latency | Fully delegated to **Polly** — compatible out of the box, no friction |
-
-Coalesce.Http does **not** replace `HttpClient` or Polly. It is a thin, composable layer that sits in the `DelegatingHandler` pipeline.
-
----
-
-## Features
-
-| Feature | Details |
-|---|---|
-| **RFC 9111 caching** | `max-age`, `s-maxage`, `Expires`, `no-cache`, `no-store`, `private`, `Vary`, `ETag`, `Last-Modified` |
-| **Additional cacheable status codes** | `301 Moved Permanently` (heuristic), `404`/`405`/`410`/`414` (explicit `max-age`/`Expires` required) — RFC 9111 §3.2 |
-| **must-revalidate / proxy-revalidate** | Blocks stale-if-error and stale-while-revalidate when the origin requires strict freshness (RFC 9111 §5.2.2.2) |
-| **Cache-Control: immutable** (RFC 8246) | Fresh immutable entries are served without revalidation even when the client sends `no-cache` or `ForceRevalidate` |
-| **Cache-Control: only-if-cached** (RFC 9111 §5.2.1.7) | Returns `504 Gateway Timeout` immediately when no usable cache entry exists, without contacting the origin |
-| **Client conditional request pass-through** | If the incoming GET carries `If-None-Match`/`If-Modified-Since` that matches a fresh entry, return `304 Not Modified` directly without hitting the origin (RFC 9111 §4.3.2) |
-| **Unsafe method invalidation** | DELETE / POST / PUT / PATCH success evicts the affected GET entry + `Location` / `Content-Location` URIs (RFC 9111 §4.4) |
-| **stale-while-revalidate** (RFC 5861 §3) | Serves stale instantly and triggers a background refresh; zero extra latency on expiry |
-| **stale-if-error** (RFC 5861 §4) | Serves stale cached content when the origin returns 5xx or throws |
-| **Per-request cache policy** | `CacheRequestPolicy.BypassCache`, `ForceRevalidate`, `NoStore` via `HttpRequestMessage.Options` |
-| **Pluggable cache store** | `ICacheStore` interface; swap in Redis or any custom store without touching the middleware |
-| **Distributed cache store** | Built-in `DistributedCacheStore` backed by `IDistributedCache` — one call to `UseDistributedCacheStore()` for shared caching across instances |
-| **Accurate size accounting** | `MemoryCacheStore` measures headers, Vary metadata, and ETag alongside the body for precise `MaxCacheSize` enforcement |
-| **LRU eviction / size cap** | `MaxCacheSize` sets a byte ceiling; the memory store evicts least-recently-used entries automatically |
-| **Request coalescing** | Concurrent identical GET/HEAD requests share a single backend call |
-| **Per-request coalescing policy** | `CoalescingRequestPolicy.BypassCoalescing` via `HttpRequestMessage.Options` |
-| **Retry-safe** | The winner's `CancellationToken` is not forwarded to the factory; retries inside the coalesced execution work correctly |
-| **Hedging compatible** | The caching layer injects conditional headers once, before Polly; every hedged clone carries them |
-| **HEAD-aware metrics** | Cache-hit and revalidation counters carry an `http.request.method = HEAD` tag dimension for HEAD requests |
-| **System.Diagnostics.Metrics** | Nine instruments under the `Coalesce.Http` meter |
-| **Configurable pipeline** | `AddCoalesceHttp`, `AddCachingOnly`, `AddCoalescingOnly` helpers |
-| **AOT / IL-trim safe** | All JSON serialisation uses `System.Text.Json` source generation; zero reflection |
+| High latency visible at cache expiry | **stale-while-revalidate** (RFC 5861 §3) returns stale instantly and refreshes in the background |
+| Stale GET entries after mutations | **Unsafe method invalidation** (RFC 9111 §4.4) evicts affected entries automatically |
 
 ---
 
@@ -60,54 +27,39 @@ Coalesce.Http does **not** replace `HttpClient` or Polly. It is a thin, composab
 dotnet add package Coalesce.Http
 ```
 
-> **Requirements:** .NET 8.0 or later. No third-party dependencies — only `Microsoft.Extensions.*`.
+Requires **.NET 8.0** or later. No third-party dependencies — only `Microsoft.Extensions.*`.
 
 ---
 
 ## Quick start
 
-### Full pipeline (caching + coalescing)
-
 ```csharp
 builder.Services
-    .AddHttpClient("my-api")
+    .AddHttpClient("catalog")
     .AddCoalesceHttp(
         configureCaching:    o => o.DefaultTtl = TimeSpan.FromSeconds(60),
-        configureCoalescing: o => o.Enabled    = true
+        configureCoalescing: o => o.CoalescingTimeout = TimeSpan.FromSeconds(5)
     );
 ```
 
-The pipeline inserted behind the scenes:
+The resulting pipeline:
 
 ```
-CachingMiddleware  (outermost — serves cache hits without touching the network)
-  └─ CoalescingHandler  (deduplicates concurrent backend misses)
-       └─ [Polly resilience handlers, if any]
-            └─ HttpClientHandler  (primary handler)
+CachingMiddleware       ← cache hits served here, no network call
+  └─ CoalescingHandler  ← concurrent misses share one backend call
+       └─ [Polly, if added]
+            └─ HttpClientHandler
 ```
 
-### Adding Polly resilience
+### With Polly resilience
 
-Always call `AddResilienceHandler` **after** `AddCoalesceHttp` so Polly sits between the coalescer and the transport:
+Always chain `AddResilienceHandler` **after** `AddCoalesceHttp` so Polly sits between the coalescer and the transport:
 
 ```csharp
-// Retry
 services.AddHttpClient("catalog")
     .AddCoalesceHttp()
-    .AddResilienceHandler("resilience", b => b.AddRetry(new HttpRetryStrategyOptions
-    {
-        MaxRetryAttempts = 3,
-        BackoffType = DelayBackoffType.Exponential,
-    }));
-
-// Hedging
-services.AddHttpClient("catalog")
-    .AddCoalesceHttp()
-    .AddResilienceHandler("resilience", b => b.AddHedging(new HttpHedgingStrategyOptions
-    {
-        MaxHedgedAttempts = 2,
-        Delay = TimeSpan.FromMilliseconds(100),
-    }));
+    .AddResilienceHandler("resilience", b =>
+        b.AddRetry(new HttpRetryStrategyOptions { MaxRetryAttempts = 3 }));
 ```
 
 ---
@@ -118,163 +70,43 @@ services.AddHttpClient("catalog")
 
 | Property | Default | Description |
 |---|---|---|
-| `DefaultTtl` | `30s` | Fallback freshness lifetime when no `Cache-Control`/`Expires` directive is present |
+| `DefaultTtl` | `30s` | Freshness lifetime when no `Cache-Control`/`Expires` is present |
 | `MaxBodySizeBytes` | `1 MB` | Responses larger than this are not stored |
-| `DefaultStaleIfErrorSeconds` | `0` | Fallback stale-if-error window when the response carries no `stale-if-error` directive; `0` disables the feature |
-| `DefaultStaleWhileRevalidateSeconds` | `0` | Fallback stale-while-revalidate window when the response carries no `stale-while-revalidate` directive; `0` disables the feature |
-| `MaxCacheSize` | `null` | Total byte ceiling for all cached bodies; when reached the memory store evicts least-recently-used entries. `null` means no limit |
+| `MaxCacheSize` | `null` | Total byte ceiling; when reached, LRU entries are evicted. `null` = no limit |
+| `DefaultStaleIfErrorSeconds` | `0` | Stale-if-error window when the response carries no directive (`0` = disabled) |
+| `DefaultStaleWhileRevalidateSeconds` | `0` | Stale-while-revalidate window when the response carries no directive (`0` = disabled) |
+| `NormalizeQueryParameters` | `false` | Sort query params before building the cache key, so `/items?b=2&a=1` and `/items?a=1&b=2` hit the same entry |
 
 ### CoalescerOptions
 
 | Property | Default | Description |
 |---|---|---|
 | `Enabled` | `true` | Set to `false` to disable coalescing (useful for debugging) |
-| `CoalescingTimeout` | `null` | Maximum time a coalesced waiter will wait before falling back to an independent request. `null` means no timeout |
-| `MaxResponseBodyBytes` | `1 MB` | Maximum response body the coalescer will buffer; responses exceeding this propagate an `InvalidOperationException` to all waiters |
+| `CoalescingTimeout` | `null` | How long a waiter will wait before falling back to an independent request. `null` = no timeout |
+| `MaxResponseBodyBytes` | `1 MB` | Maximum body the coalescer will buffer; exceeding this throws for all waiters |
+| `CoalesceKeyHeaders` | `[]` | Extra request headers (e.g. `X-Tenant-Id`) included in the coalescing key |
+
+Both options classes are registered as **named options** (`IOptionsMonitor<T>`) keyed by the client name, so runtime-tuneable settings take effect immediately on configuration reload without restarting the app.
 
 ---
 
-## stale-if-error (RFC 5861 §4)
+## Pipeline helpers
 
-When the origin returns a `5xx` response or throws a network exception, Coalesce.Http can serve a stale cached entry if the `stale-if-error` window has not expired.
-
-**Via response header:**
-
-```
-Cache-Control: max-age=60, stale-if-error=86400
-```
-
-**Via default configuration:**
-
-```csharp
-.AddCoalesceHttp(o => o.DefaultStaleIfErrorSeconds = 300)
-```
-
-The window is measured in seconds from the moment the entry became stale (`ExpiresAt`). An entry can be served under stale-if-error until `ExpiresAt + StaleIfErrorSeconds`.
-
-> **Note:** `must-revalidate` and `proxy-revalidate` override stale-if-error. When either directive is present, the cache will never serve a stale response — the error propagates to the caller instead.
-
----
-
-## stale-while-revalidate (RFC 5861 §3)
-
-When a cache entry is stale but within the stale-while-revalidate window, Coalesce.Http serves the stale response immediately and triggers a **background revalidation** — the caller experiences zero additional latency.
-
-**Via response header:**
-
-```
-Cache-Control: max-age=60, stale-while-revalidate=30
-```
-
-**Via default configuration:**
-
-```csharp
-.AddCoalesceHttp(o => o.DefaultStaleWhileRevalidateSeconds = 30)
-```
-
-Only one background revalidation runs per key at a time. If the background request returns a fresh `200`, the new entry is stored; if it returns `304`, the TTL is refreshed in place.
-
-> **Note:** `must-revalidate` and `proxy-revalidate` also block stale-while-revalidate. In that case the request waits synchronously for the revalidation to complete.
-
----
-
-## must-revalidate / proxy-revalidate (RFC 9111 §5.2.2.2)
-
-When the origin includes `must-revalidate` or `proxy-revalidate` in `Cache-Control`, the middleware enforces strict freshness: stale-if-error and stale-while-revalidate are both disabled for that entry. A stale entry **must** be successfully revalidated before it can be served.
-
-```
-Cache-Control: max-age=60, must-revalidate
-```
-
----
-
-## Unsafe method invalidation (RFC 9111 §4.4)
-
-A successful `POST`, `PUT`, `PATCH`, or `DELETE` response automatically evicts the cached GET entry for the affected URI, preventing stale reads after mutations.
-
-The following URIs are invalidated on a non-error response (`1xx`–`3xx`):
-
-| Header | RFC requirement |
+| Method | What it registers |
 |---|---|
-| Effective request URI | MUST invalidate |
-| `Location` response header | MAY invalidate (implemented) |
-| `Content-Location` response header | MAY invalidate (implemented) |
-
-No configuration required — invalidation is automatic for all unsafe methods in the pipeline.
-
----
-
-## Per-request cache policy
-
-Override caching behaviour on individual requests without changing global `CacheOptions`, using `HttpRequestMessage.Options`:
-
-```csharp
-var request = new HttpRequestMessage(HttpMethod.Get, "/api/products");
-request.Options.Set(CacheRequestPolicy.BypassCache, true);
-```
-
-| Key | Effect |
-|---|---|
-| `CacheRequestPolicy.BypassCache` | Skips all cache interaction: no lookup, no storage, no unsafe-method invalidation. Request goes directly to the inner handler. |
-| `CacheRequestPolicy.ForceRevalidate` | Forces conditional revalidation even if the cached entry is fresh. Equivalent to `no-cache` but set programmatically. |
-| `CacheRequestPolicy.NoStore` | Prevents the response from being stored. Cache reads, revalidation, and 304 TTL refreshes still work normally. |
-
----
-
-## Per-request coalescing policy
-
-Override coalescing behaviour on individual requests without changing global `CoalescerOptions`, using `HttpRequestMessage.Options`:
-
-```csharp
-var request = new HttpRequestMessage(HttpMethod.Get, "/api/products");
-request.Options.Set(CoalescingRequestPolicy.BypassCoalescing, true);
-```
-
-| Key | Effect |
-|---|---|
-| `CoalescingRequestPolicy.BypassCoalescing` | Skips coalescing entirely: the request is forwarded directly to the inner handler as an independent call, even if other identical requests are in flight. |
-
----
-
-## Custom cache store
-
-The default store is `MemoryCacheStore` backed by `IMemoryCache`. Implement `ICacheStore` to plug in any storage backend:
-
-```csharp
-public interface ICacheStore
-{
-    bool TryGetValue(string key, out CacheEntry? entry);
-    void Set(string key, CacheEntry entry);
-    void Remove(string key);
-}
-```
-
-Register the custom store before calling `AddCoalesceHttp`:
-
-```csharp
-services.AddSingleton<ICacheStore, MyRedisStore>();
-
-services.AddHttpClient("my-api")
-    .AddCoalesceHttp();
-```
-
-You can also call `ICacheStore.Remove` directly at any time to evict a specific entry programmatically.
+| `AddCoalesceHttp()` | `CachingMiddleware` + `CoalescingHandler` + metrics |
+| `AddCachingOnly()` | `CachingMiddleware` + metrics |
+| `AddCoalescingOnly()` | `CoalescingHandler` + metrics |
+| `UseDistributedCacheStore()` | Replaces `MemoryCacheStore` with `DistributedCacheStore` (chain after the above) |
 
 ---
 
 ## Distributed cache store
 
-For multi-instance deployments (Kubernetes, App Service scale-out, etc.) replace the default in-memory store with a `IDistributedCache`-backed implementation by calling `UseDistributedCacheStore()` **after** `AddCoalesceHttp()`.
-
-`CacheEntry` objects are serialized to JSON and stored as UTF-8 bytes. The `AbsoluteExpiration` is extended by `Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)` beyond `CacheEntry.ExpiresAt`, so the backing store retains entries long enough for stale serving while still evicting them once all configured windows have expired — even between process restarts.
-
-### Redis
-
-```bash
-dotnet add package Microsoft.Extensions.Caching.StackExchangeRedis
-```
+For multi-instance deployments, replace the default in-memory store with any `IDistributedCache` backend:
 
 ```csharp
+// Redis (any IDistributedCache provider works — SQL Server, NCache, etc.)
 builder.Services.AddStackExchangeRedisCache(o =>
     o.Configuration = builder.Configuration["Redis:ConnectionString"]);
 
@@ -284,162 +116,81 @@ builder.Services
     .UseDistributedCacheStore();
 ```
 
-### Any `IDistributedCache` provider
+Entries are serialised to JSON. The backing store TTL is extended by `Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)` beyond `ExpiresAt` so stale-serving windows survive process restarts.
 
-`UseDistributedCacheStore()` works with **any** registered `IDistributedCache` implementation — Redis, SQL Server, NCache, or your own:
+> Coalescing still applies. Concurrent cache misses are deduplicated before the distributed store is consulted.
+
+---
+
+## Per-request policies
+
+Override behaviour on individual requests via `HttpRequestMessage.Options`:
 
 ```csharp
-// SQL Server example
-builder.Services.AddDistributedSqlServerCache(o =>
-{
-    o.ConnectionString = "..."; o.SchemaName = "dbo"; o.TableName = "HttpCache";
-});
-
-builder.Services
-    .AddHttpClient("catalog")
-    .AddCoalesceHttp()
-    .UseDistributedCacheStore();
+var request = new HttpRequestMessage(HttpMethod.Get, "/api/products");
+request.Options.Set(CacheRequestPolicy.BypassCache, true);
 ```
 
-### API
+**Cache policies** (`CacheRequestPolicy`):
 
-| Method | Behaviour |
+| Key | Effect |
 |---|---|
-| `UseDistributedCacheStore()` | Removes the default `MemoryCacheStore` singleton and registers `DistributedCacheStore`. Must be chained after `AddCoalesceHttp()` or `AddCachingOnly()`. |
+| `BypassCache` | Skips all cache interaction — lookup, storage, and unsafe-method invalidation |
+| `ForceRevalidate` | Forces conditional revalidation even if the entry is fresh |
+| `NoStore` | Prevents the response from being stored; reads and revalidation still work |
 
-> **Request coalescing still applies.** `CoalescingHandler` deduplicates concurrent cache misses before the distributed cache is consulted, so a cache-miss storm does not produce a distributed-cache stampede.
+**Coalescing policy** (`CoalescingRequestPolicy`):
+
+| Key | Effect |
+|---|---|
+| `BypassCoalescing` | Forwards the request independently, bypassing deduplication |
 
 ---
 
 ## Metrics
 
-Register a `MeterListener`
-
-| Instrument | Unit | Type | Description |
-|---|---|---|---|
-| `coalesce_http.cache.hits` | requests | Counter | Requests served from cache |
-| `coalesce_http.cache.misses` | requests | Counter | Requests forwarded to the origin |
-| `coalesce_http.cache.revalidations` | requests | Counter | Conditional revalidation requests sent |
-| `coalesce_http.cache.stale_errors_served` | requests | Counter | Stale responses served under stale-if-error |
-| `coalesce_http.cache.stale_while_revalidate_served` | requests | Counter | Stale responses served while background revalidation runs |
-| `coalesce_http.cache.invalidations` | requests | Counter | Cache entries evicted by unsafe method responses (RFC 9111 §4.4) |
-| `coalesce_http.coalescing.deduplicated` | requests | Counter | Requests that reused an in-flight coalesced response |
-| `coalesce_http.coalescing.inflight` | requests | UpDownCounter | Current in-flight coalesced requests at the origin |
-| `coalesce_http.coalescing.timeouts` | requests | Counter | Coalesced waiters that timed out and fell back to independent execution |
-
-`CoalesceHttpMetrics` is registered automatically as a singleton when you call any of the `AddCoalesceHttp*` helpers. Dispose the DI container to dispose the `Meter`.
-
----
-
-## Pipeline helpers
-
-| Method | Registers |
-|---|---|
-| `AddCoalesceHttp()` | `CachingMiddleware` + `CoalescingHandler` + `CoalesceHttpMetrics` |
-| `AddCachingOnly()` | `CachingMiddleware` + `CoalesceHttpMetrics` |
-| `AddCoalescingOnly()` | `CoalescingHandler` + `CoalesceHttpMetrics` |
-| `UseDistributedCacheStore()` | Replaces `MemoryCacheStore` with `DistributedCacheStore` (chain after the above helpers) |
-
----
-
-## Polly compatibility rules
-
-| Rule | Behaviour |
-|---|---|
-| **Rule 1 — retry** | All coalesced callers share the winner's execution, including any Polly retries that occur within it. The transport is called at most once per retry attempt, not once per caller. |
-| **Rule 2 — conditional headers** | `CachingMiddleware` injects `If-None-Match`/`If-Modified-Since` before the request enters the Polly pipeline. Every retry attempt carries those headers unchanged. |
-| **Rule 3 — hedging** | Each hedged clone must carry its own independent copy of the request; `FakeHedgingHandler` and `Microsoft.Extensions.Http.Resilience` both satisfy this requirement. |
-
----
-
-## How request coalescing works
-
-```
-  Time ──────────────────────────────────────────────►
-
-  Caller A ──► CoalescingHandler ──► [winner] ──► origin
-  Caller B ──► CoalescingHandler ──► [waits]  ──► ↑ shares result
-  Caller C ──► CoalescingHandler ──► [waits]  ──► ↑ shares result
-
-  Result: 3 callers, 1 origin call, 3 independent cloned responses
-```
-
-Under the hood, `RequestCoalescer` uses a `ConcurrentDictionary<RequestKey, TaskCompletionSource>` for **lock-free coordination**. Each caller receives a **cloned** `HttpResponseMessage` with its own readable content stream — there is no shared mutable state between callers.
-
-Coalescing applies to **GET** and **HEAD** requests. All other HTTP methods bypass coalescing automatically. GET and HEAD requests to the same URL are coalesced independently (they have separate coalescing keys because `RequestKey` includes the method).
-
----
-
-## How HTTP caching works
-
-Freshness lifetime follows RFC 9111 §4.2.1 priority order:
-
-```
-s-maxage  →  max-age  →  Expires header  →  DefaultTtl (fallback)
-```
-
-On expiry, the middleware performs **conditional revalidation** rather than a full download:
-
-- Sends `If-None-Match` when the stored entry has an `ETag`
-- Sends `If-Modified-Since` when the stored entry has a `Last-Modified` date
-- A `304 Not Modified` response refreshes the TTL without re-downloading the body
-
-On origin error, **stale-if-error** (RFC 5861) serves the cached entry within the configured window.
-
----
-
-## OpenTelemetry setup
+All instruments live under the **`Coalesce.Http`** meter.
 
 ```csharp
-builder.Services
-    .AddOpenTelemetry()
+builder.Services.AddOpenTelemetry()
     .WithMetrics(m => m.AddMeter("Coalesce.Http"));
 ```
 
----
-
-## Project structure
-
-```
-Coalesce.Http/
-├─ Coalescing/
-│  ├─ RequestCoalescer.cs       ← lock-free coalescing core (ConcurrentDictionary + TCS)
-│  ├─ RequestKey.cs             ← (Method, Url) value type identity
-│  ├─ CoalescedRequest.cs       ← shared TaskCompletionSource state
-│  ├─ CachedResponse.cs         ← cloneable HttpResponseMessage snapshot
-│  └─ CoalescingRequestPolicy.cs ← per-request option key (BypassCoalescing)
-├─ Caching/
-│  ├─ CachingMiddleware.cs      ← RFC 9111 + RFC 5861 (stale-if-error, stale-while-revalidate)
-│  ├─ FreshnessCalculator.cs    ← s-maxage → max-age → Expires → DefaultTtl
-│  ├─ ICacheStore.cs            ← pluggable store interface
-│  ├─ MemoryCacheStore.cs       ← default IMemoryCache-backed implementation with LRU eviction
-│  ├─ DistributedCacheStore.cs  ← IDistributedCache-backed implementation (Redis, SQL Server, …)
-│  ├─ CacheRequestPolicy.cs     ← per-request option keys (BypassCache, ForceRevalidate, NoStore)
-│  ├─ CacheEntry.cs
-│  ├─ CacheOptions.cs
-│  ├─ ICacheKeyBuilder.cs
-│  └─ DefaultCacheKeyBuilder.cs
-├─ Handlers/
-│  └─ CoalescingHandler.cs      ← DelegatingHandler wrapping RequestCoalescer
-├─ Metrics/
-│  └─ CoalesceHttpMetrics.cs    ← System.Diagnostics.Metrics (OpenTelemetry-compatible)
-├─ Options/
-│  └─ CoalescerOptions.cs
-└─ Extensions/
-   └─ HttpClientBuilderExtensions.cs  ← AddCoalesceHttp / AddCachingOnly / AddCoalescingOnly / UseDistributedCacheStore
-```
+| Instrument | Type | Description |
+|---|---|---|
+| `coalesce_http.cache.hits` | Counter | Requests served from cache |
+| `coalesce_http.cache.misses` | Counter | Requests forwarded to the origin |
+| `coalesce_http.cache.revalidations` | Counter | Conditional revalidation requests sent |
+| `coalesce_http.cache.stale_errors_served` | Counter | Stale responses served under stale-if-error |
+| `coalesce_http.cache.stale_while_revalidate_served` | Counter | Stale responses served during background revalidation |
+| `coalesce_http.cache.invalidations` | Counter | Entries evicted by unsafe method responses |
+| `coalesce_http.coalescing.deduplicated` | Counter | Requests that reused an in-flight response |
+| `coalesce_http.coalescing.inflight` | UpDownCounter | Current in-flight coalesced origin calls |
+| `coalesce_http.coalescing.timeouts` | Counter | Waiters that timed out and fell back to independent execution |
 
 ---
 
-## Dependencies
+## Benchmark highlights
 
-The library has **no third-party dependencies**. It only references standard Microsoft packages:
+BenchmarkDotNet v0.15.2 · .NET 10 · Windows 11 · i7-12650H.
 
-| Package | Purpose |
-|---|---|
-| `Microsoft.Extensions.Http` | `IHttpClientBuilder`, `DelegatingHandler` |
-| `Microsoft.Extensions.Caching.Memory` | In-memory cache store |
-| `Microsoft.Extensions.Caching.Abstractions` | `IMemoryCache` interface |
+### Coalescing — backend load reduction
+
+100 concurrent callers, 20 ms backend latency:
+
+| Scenario | Mean | vs baseline |
+|---|---:|---:|
+| No coalescing (100 independent calls) | 623.79 ms | 1× |
+| With coalescing (1 shared call) | 31.19 ms | **20× faster** |
+
+### Caching — hit vs origin round-trip
+
+10 ms simulated origin latency:
+
+| Scenario | Mean | vs baseline |
+|---|---:|---:|
+| No cache (origin round-trip) | 15,591,147 ns | 1× |
+| Cache hit (served from memory) | 538 ns | **~29,000× faster** |
 
 ---
 
@@ -449,84 +200,7 @@ The library has **no third-party dependencies**. It only references standard Mic
 dotnet test Coalesce.Http.Tests
 ```
 
-315 tests covering coalescing, caching, stale-if-error, stale-while-revalidate, must-revalidate, unsafe method invalidation, per-request cache policy, per-request coalescing policy, metrics, Polly integration (retry + hedging), response cloning, distributed cache store, immutable entries, only-if-cached, client conditional 304 pass-through, additional cacheable status codes, accurate size accounting, and HEAD-aware metrics.
-
----
-
-## Running the benchmarks
-
-```bash
-cd BenchmarkSuite1
-dotnet run -c Release
-```
-
-Benchmarks use [BenchmarkDotNet](https://benchmarkdotnet.org) and cover coalescing throughput at varying concurrency levels and cache hit/miss latency.
-
----
-
-## Benchmark Results
-
-All benchmarks run with BenchmarkDotNet v0.15.2, .NET 10.0.5, MediumRunJob (15 iterations × 2 launches × 10 warmups).
-Environment: Windows 11 — 12th Gen Intel Core i7-12650H, 10 cores / 16 threads.
-
-### Request Coalescing — Backend Load Reduction
-
-Simulates a rate-limited backend (max 5 concurrent requests, 20 ms latency each).
-Without coalescing, N callers queue behind the bottleneck. With coalescing, **only 1 call is made** regardless of N.
-
-| Method | Concurrency | Mean | Ratio | Allocated |
-|---|---:|---:|---:|---:|
-| **No coalescing (N independent calls)** | **10** | **62.35 ms** | **1.00** | **3.42 KB** |
-| With coalescing (1 shared call) | 10 | 31.20 ms | 0.50 | 8.01 KB |
-| | | | | |
-| **No coalescing (N independent calls)** | **50** | **311.76 ms** | **1.00** | **17.80 KB** |
-| With coalescing (1 shared call) | 50 | 31.14 ms | 0.10 | 31.93 KB |
-| | | | | |
-| **No coalescing (N independent calls)** | **100** | **623.79 ms** | **1.00** | **35.77 KB** |
-| With coalescing (1 shared call) | 100 | 31.19 ms | 0.05 | 61.86 KB |
-
-> **100 concurrent requests → 20× faster.** The backend sees 1 request instead of 100.
-
-### Caching — Cache Hit vs Origin Round-Trip
-
-Isolates the caching layer to show the throughput difference between a cache hit and a real origin round-trip (10 ms simulated latency).
-
-| Method | Mean | Error | Ratio | Allocated |
-|---|---:|---:|---:|---:|
-| **No cache (origin round-trip)** | **15,591,147 ns** | **±39,617 ns** | **1.000** | **1.68 KB** |
-| Cache hit (served from memory) | 538 ns | ±8.62 ns | 0.000 | 1.75 KB |
-
-> **Cache hits are ~29,000× faster** — sub-microsecond response with near-zero overhead.
-
-### End-to-End Pipeline — Full Stack Comparison
-
-50 sequential GET requests to the same endpoint. The plain client hits the backend every time (10 ms latency). Coalesce.Http serves all 50 from cache after the first request.
-
-| Method | Mean | Error | Ratio | Allocated |
-|---|---:|---:|---:|---:|
-| **Plain HttpClient (no cache, no coalescing)** | **779,477 μs** | **±1,540 μs** | **1.000** | **88.77 KB** |
-| Coalesce.Http pipeline (cache hits) | 27.16 μs | ±0.22 μs | 0.000 | 84.77 KB |
-| Coalesce.Http concurrent burst | 28.46 μs | ±0.22 μs | 0.000 | 86.09 KB |
-
-> **50 requests in 27 μs vs 779 ms — over 28,000× faster.**
-
-### Caching Middleware — Micro-benchmarks
-
-| Method | Mean | Error | Allocated |
-|---|---:|---:|---:|
-| Cache Hit (GET served from cache) | 533 ns | ±2.41 ns | 1.74 KB |
-| Cache Miss (forwarded and stored) | 4,449 ns | ±203 ns | 3.98 KB |
-| Non-cacheable (POST bypass) | 506 ns | ±7.46 ns | 1.73 KB |
-
-### Coalescing — Micro-benchmarks
-
-| Method | Concurrency | Mean | Allocated |
-|---|---:|---:|---:|
-| Sequential requests (no coalescing) | 1 | 4,024 ns | 15.63 KB |
-| Concurrent coalesced into one call | 1 | 5,072 ns | 1.98 KB |
-| Sequential requests (no coalescing) | 100 | 4,103 ns | 15.63 KB |
-| Concurrent coalesced into one call | 100 | 40,169 ns | 55.24 KB |
-| Independent keys (no benefit) | 100 | 511 ns | 1.63 KB |
+318 tests covering RFC 9111 caching, RFC 5861 stale extensions, request coalescing, distributed cache store, per-request policies, metrics, Polly integration (retry + hedging), and more.
 
 ---
 
@@ -534,8 +208,8 @@ Isolates the caching layer to show the throughput difference between a cache hit
 
 Contributions are welcome. Please open an issue before submitting a pull request for significant changes.
 
-- Follow the existing code style (C# 12+; C# 14 features only inside `#if NET9_0_OR_GREATER` / `#if NET10_0_OR_GREATER` guards, `async/await` for I/O, nullable enabled)
-- Add or update unit tests for any new logic
+- Follow the existing code style (C# 12+, `async/await`, nullable enabled)
+- Add or update tests for any new logic
 - Keep compiler warnings at zero
 
 ---
@@ -548,62 +222,46 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### v1.2.0
+- **`IOptionsMonitor<T>` for runtime reconfiguration** — `CacheOptions` and `CoalescerOptions` are registered as named options keyed by client name. Runtime-tuneable settings (`DefaultTtl`, `MaxBodySizeBytes`, `Enabled`, `CoalescingTimeout`, `CoalesceKeyHeaders`, etc.) take effect immediately on configuration reload. Structural options (`MaxCacheSize`, `NormalizeQueryParameters`) are still read at registration time.
+- **Content-header preservation** — `Content-Type`, `Content-Encoding`, and other content headers are now correctly restored on responses served from cache.
+- **Multi-client cache isolation** — each named `HttpClient` gets its own keyed `IMemoryCache`, `ICacheStore`, and `ICacheKeyBuilder`, preventing `SizeLimit` conflicts and option bleed between clients.
+
 ### v1.1.0
-- **Client conditional request pass-through (RFC 9111 §4.3.2)** — when an incoming GET carries `If-None-Match` or `If-Modified-Since` and a fresh cached entry has a matching validator, the middleware returns `304 Not Modified` directly without contacting the origin. `If-None-Match` takes precedence over `If-Modified-Since` per RFC 9110 §13.1. The 304 includes mandatory headers (`ETag`, `Cache-Control`, `Content-Location`, `Date`, `Expires`, `Vary`) and an `Age` header.
-- **Additional cacheable status codes (RFC 9111 §3.2)** — `301 Moved Permanently` is now cached heuristically (using `max-age`/`Expires`/`DefaultTtl`); `404 Not Found`, `405 Method Not Allowed`, `410 Gone`, and `414 URI Too Long` are cached only when an explicit `max-age` or `Expires` directive is present (no heuristic fallback for error codes).
-- **`Cache-Control: immutable` (RFC 8246)** — responses carrying `immutable` are served from cache without revalidation even when the client sends `no-cache` or the `ForceRevalidate` per-request policy is set, as long as the entry is still fresh. Stale immutable entries are revalidated normally.
-- **`Cache-Control: only-if-cached` (RFC 9111 §5.2.1.7)** — when the client request includes `only-if-cached` and there is no usable cache entry (miss or stale without validator), the middleware returns `504 Gateway Timeout` immediately without contacting the origin.
-- **`CacheEntryJsonConverter` hardening** — the `Read` method now validates the leading `StartObject` token and guards against unexpected token types inside the property loop; unknown future fields are skipped via the `default:` branch. `ETag` and `LastModified` are always written to JSON (as explicit `null` when absent) so round-trips produce a consistent field count.
-- **`MemoryCacheStore` accurate size reporting** — `cacheEntry.Size` now accounts for response headers, `Vary` field names and captured values, and the `ETag` string in addition to the body length, making `MaxCacheSize` enforcement significantly more accurate for responses with large header maps.
-- **HEAD-aware metrics** — `RecordCacheHit` and `RecordRevalidation` now accept an optional `HttpMethod` parameter; when `HEAD` is passed the counter carries an `http.request.method = HEAD` tag dimension, making HEAD traffic distinguishable in dashboards without changing the existing GET counters.
-- **Fix: `Last-Modified` now correctly preserved across cache storage** — `StoreAsync` previously captured `response.Content?.Headers.LastModified` after replacing the content with `ByteArrayContent`, discarding the content headers. The value is now captured before the content swap.
+- **Client conditional request pass-through** (RFC 9111 §4.3.2) — `If-None-Match`/`If-Modified-Since` matched against fresh entries returns `304 Not Modified` without hitting the origin.
+- **Additional cacheable status codes** (RFC 9111 §3.2) — `301` cached heuristically; `404`, `405`, `410`, `414` cached only when an explicit `max-age`/`Expires` is present.
+- **`Cache-Control: immutable`** (RFC 8246) — fresh immutable entries skip revalidation even on client `no-cache` or `ForceRevalidate`.
+- **`Cache-Control: only-if-cached`** (RFC 9111 §5.2.1.7) — returns `504 Gateway Timeout` when no usable entry exists.
+- **HEAD-aware metrics** — cache-hit and revalidation counters carry an `http.request.method = HEAD` tag dimension.
+- **Accurate size accounting** — `MemoryCacheStore` now accounts for headers, Vary metadata, and ETag alongside the body.
 
 ### v1.0.4
-- **Fix: distributed cache TTL now covers stale-serving windows** — `DistributedCacheStore.Set` previously set `AbsoluteExpiration = ExpiresAt`, causing the backing store (Redis, SQL Server, etc.) to evict entries at the moment they became stale. Entries with `stale-if-error` or `stale-while-revalidate` directives could therefore never be served as stale from a distributed cache. The TTL is now extended by `Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)` beyond `ExpiresAt`, ensuring entries survive until all configured stale windows have elapsed.
-- **Fix: unobserved task exceptions in `RequestCoalescer`** — when the winner's factory threw, `TaskCompletionSource.SetException` was called on the shared task. Waiters that had not yet subscribed (or whose `.WaitAsync()` wrappers were GC'd before observation) left the exception unobserved, triggering `TaskScheduler.UnobservedTaskException` warnings on the finalizer thread. The exception is now explicitly observed in the `finally` block via `_ = Tcs.Task.Exception`.
+- **Fix:** distributed cache TTL now covers stale-serving windows.
+- **Fix:** unobserved task exceptions in `RequestCoalescer` no longer trigger `TaskScheduler.UnobservedTaskException`.
 
 ### v1.0.3
-- **Distributed cache store**
-- **`UseDistributedCacheStore()` pipeline helper** — replaces the default `MemoryCacheStore` singleton; chainable on `IHttpClientBuilder`
+- Distributed cache store (`DistributedCacheStore`, `UseDistributedCacheStore()`).
 
 ### v1.0.2
-- **`Age` response header (RFC 9111 §5.1)** — cached responses now carry an `Age` header reflecting the elapsed seconds since the entry was stored
-- **`StoredAt` field on `CacheEntry`** — records the absolute time the response was cached, used to compute `Age`
+- `Age` response header (RFC 9111 §5.1).
 
 ### v1.0.1
-- **Multi-targeting** — added .NET 8.0 support alongside .NET 10.0; minimum requirement is now .NET 8.0 or later
+- Multi-targeting: .NET 8.0 + .NET 10.0.
 
 ### v0.0.6
-- **Per-request coalescing policy** — `CoalescingRequestPolicy.BypassCoalescing` via `HttpRequestMessage.Options`; opt out of deduplication on individual requests
-- **HEAD request coalescing** — concurrent identical HEAD requests are now coalesced (GET and HEAD use separate coalescing keys)
-- **Fix: winner cancellation no longer poisons waiters** — if the winner's `CancellationToken` fires during body reading, the `OperationCanceledException` no longer propagates to all coalesced waiters via the shared `TaskCompletionSource`
+- Per-request coalescing policy (`BypassCoalescing`); HEAD request coalescing; winner-cancellation fix.
 
 ### v0.0.5
-- **Per-request cache policy** — `CacheRequestPolicy.BypassCache`, `ForceRevalidate`, `NoStore` via `HttpRequestMessage.Options`
-- **`ICacheStore` abstraction** — pluggable cache store interface; swap in any backend without touching the middleware
-- **LRU eviction / `MaxCacheSize`** — byte ceiling on the in-memory store with automatic least-recently-used eviction
-- **Programmatic invalidation** — `ICacheStore.Remove` evicts individual entries on demand
+- Per-request cache policy (`BypassCache`, `ForceRevalidate`, `NoStore`); `ICacheStore` abstraction; LRU eviction / `MaxCacheSize`; programmatic invalidation.
 
 ### v0.0.4
-- **stale-while-revalidate (RFC 5861 §3)** — serve stale instantly and refresh in background; zero extra latency on expiry
-- **must-revalidate / proxy-revalidate (RFC 9111 §5.2.2.2)** — blocks stale-if-error and stale-while-revalidate when the origin requires strict freshness
-- **Unsafe method invalidation (RFC 9111 §4.4)** — DELETE / POST / PUT / PATCH success evicts the affected GET entry and related `Location` / `Content-Location` URIs
-- **`CoalescerOptions.CoalescingTimeout`** — waiters fall back to independent execution after the configured timeout
-- **`CoalescerOptions.MaxResponseBodyBytes`** — guards against buffering oversized coalesced responses
-- **Three new metrics** — `coalesce_http.cache.stale_while_revalidate_served`, `coalesce_http.cache.invalidations`, `coalesce_http.coalescing.timeouts`
+- `stale-while-revalidate`, `must-revalidate`/`proxy-revalidate`, unsafe method invalidation, `CoalescingTimeout`, `MaxResponseBodyBytes`.
 
 ### v0.0.3
-- **stale-if-error (RFC 5861)** — serve stale cached content on 5xx / network failures
-- **`AddCoalesceHttp` overload** — accepts both `Action<CacheOptions>` and `Action<CoalescerOptions>`
-- **`AddCachingOnly` / `AddCoalescingOnly` helpers** — use either layer independently
-- **`CoalescerOptions.Enabled`** — disable coalescing at runtime without removing the handler
-- **`System.Diagnostics.Metrics`** — six instruments under the `Coalesce.Http` meter
-- **Coalescing benchmarks** — `CoalescingBenchmarks` added to the benchmark suite
+- `stale-if-error`, `AddCachingOnly`/`AddCoalescingOnly`, `System.Diagnostics.Metrics`.
 
 ### v0.0.2
-- RFC 9111 conditional revalidation (`ETag`, `If-None-Match`, `Last-Modified`, `If-Modified-Since`)
-- `Vary` / `Vary: *` support
-- Polly retry + hedging integration tests (simulated and real)
+- RFC 9111 conditional revalidation (`ETag`, `Last-Modified`, `Vary`); Polly integration tests.
 
 ### v0.0.1
-- Initial release: `CachingMiddleware`, `CoalescingHandler`, `AddCoalesceHttp`
+- Initial release.
