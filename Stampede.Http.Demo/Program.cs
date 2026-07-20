@@ -10,6 +10,8 @@ using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Http.Headers;
 
+Console.OutputEncoding = System.Text.Encoding.UTF8;
+
 PrintPipelineOverview();
 
 await Demo1_CoalescingAsync();
@@ -20,7 +22,14 @@ await Demo5_PerRequestPoliciesAsync();
 await Demo6_UnsafeMethodInvalidationAsync();
 await Demo7_MetricsAsync();
 
-Banner("All demos complete!", ConsoleColor.Green);
+if (Checks.Failures == 0)
+{
+    Banner("All demos complete — every check passed ✓", ConsoleColor.Green);
+    return 0;
+}
+
+Banner($"{Checks.Failures} check(s) FAILED ✗", ConsoleColor.Red);
+return 1;
 
 // -------------------------------------------------------------------------
 // Pipeline overview
@@ -78,7 +87,7 @@ static async Task Demo1_CoalescingAsync()
     Note("  1. All concurrent GETs sharing (Method + URL + Vary headers) enter together.");
     Note("  2. The FIRST to arrive is elected WINNER -> it calls the origin.");
     Note("  3. Every other request becomes a WAITER -> blocks on a TaskCompletionSource.");
-    Note("  4. Origin responds ? body is buffered into CachedResponse (byte[] snapshot).");
+    Note("  4. Origin responds → body is buffered into CachedResponse (byte[] snapshot).");
     Note("  5. CachedResponse is CLONED once per waiter (independent stream, no sharing).");
     Note("  6. All callers receive an independent HttpResponseMessage simultaneously.");
     Console.WriteLine();
@@ -121,8 +130,8 @@ static async Task Demo1_CoalescingAsync()
         Behind("  [CoalescingHandler] Response cloned 9× — one independent clone per waiter");
         Behind("  [CachingMiddleware] Response stored in cache  (Cache-Control: max-age=60)");
         Console.WriteLine();
-        Ok($"  Origin calls : {handler.CallCount}  (expected 1)");
-        Ok($"  Responses OK : {responses.Count(r => r.IsSuccessStatusCode)} / 10");
+        Checks.That(handler.CallCount == 1, $"Origin calls : {handler.CallCount}  (expected 1)");
+        Checks.That(responses.Count(r => r.IsSuccessStatusCode) == 10, $"Responses OK : {responses.Count(r => r.IsSuccessStatusCode)} / 10  (expected 10)");
         Ok($"  Elapsed      : {sw.ElapsedMilliseconds} ms  (same wall-clock as a single request)");
         Ok($"  Saved        : 9 unnecessary origin calls eliminated");
     }
@@ -157,8 +166,8 @@ static async Task Demo1_CoalescingAsync()
             var responses = await Task.WhenAll(tasks);
             Behind("  [No coalescing] All 10 requests reached the origin independently");
             Console.WriteLine();
-            Ok($"  Origin calls : {handler.CallCount}  (all 10 hit the backend — thundering herd!)");
-            Ok($"  Responses OK : {responses.Count(r => r.IsSuccessStatusCode)} / 10");
+            Checks.That(handler.CallCount == 10, $"Origin calls : {handler.CallCount}  (expected 10 — all hit the backend — thundering herd!)");
+            Checks.That(responses.Count(r => r.IsSuccessStatusCode) == 10, $"Responses OK : {responses.Count(r => r.IsSuccessStatusCode)} / 10  (expected 10)");
         }
         catch (TimeoutException)
         {
@@ -182,9 +191,12 @@ static async Task Demo2_CachingAsync()
     Note("  s-maxage  >  max-age  >  Expires header  >  DefaultTtl (configured fallback)");
     Note("");
     Note("Revalidation (RFC 9111 §4.3.4 / §4.3.5):");
-    Note("  When an entry EXPIRES, CachingMiddleware does not discard it immediately.");
-    Note("  If the stored response had an ETag or Last-Modified header, it sends a");
-    Note("  CONDITIONAL request with  If-None-Match / If-Modified-Since.");
+    Note("  If a STALE entry is still retained and has an ETag or Last-Modified header,");
+    Note("  CachingMiddleware sends a CONDITIONAL request with If-None-Match /");
+    Note("  If-Modified-Since instead of refetching the full body.");
+    Note("  NOTE: the in-memory store retains expired entries only for the duration of");
+    Note("  the stale windows (stale-if-error / stale-while-revalidate) — this demo uses");
+    Note("  stale-if-error=120 so the validator is still available after max-age expires.");
     Note("  · 304 Not Modified -> TTL refreshed, body reused (no bandwidth wasted).");
     Note("  · 200 OK           -> new body stored, old entry replaced.");
     Console.WriteLine();
@@ -207,9 +219,9 @@ static async Task Demo2_CachingAsync()
         {
             Content = new StringContent("""{"catalog":"v1","items":120}""")
         };
-        resp.Headers.CacheControl = new CacheControlHeaderValue { MaxAge = TimeSpan.FromSeconds(1) };
+        resp.Headers.CacheControl = CacheControlHeaderValue.Parse("max-age=1, stale-if-error=120");
         resp.Headers.ETag = new EntityTagHeaderValue("\"v1-abc\"");
-        Behind("  [Origin] Responding  200 OK  ETag: \"v1-abc\"  Cache-Control: max-age=1");
+        Behind("  [Origin] Responding  200 OK  ETag: \"v1-abc\"  Cache-Control: max-age=1, stale-if-error=120");
         return resp;
     });
 
@@ -235,7 +247,7 @@ static async Task Demo2_CachingAsync()
     sw.Restart();
     var r2 = await client.GetAsync(url);
     sw.Stop();
-    Ok($"  Status: {r2.StatusCode}  |  ETag: {r2.Headers.ETag}  |  Origin calls: {handler.CallCount}  |  Elapsed: {sw.ElapsedMilliseconds} ms  -> from memory");
+    Checks.That(handler.CallCount == 1, $"Status: {r2.StatusCode}  |  ETag: {r2.Headers.ETag}  |  Origin calls: {handler.CallCount}  (expected 1 — served from memory)  |  Elapsed: {sw.ElapsedMilliseconds} ms");
 
     // -- Let entry expire --------------------------------------------------
     Console.WriteLine();
@@ -251,9 +263,8 @@ static async Task Demo2_CachingAsync()
     sw.Restart();
     var r3 = await client.GetAsync(url);
     sw.Stop();
-    Ok($"  Status: {r3.StatusCode}  |  ETag: {r3.Headers.ETag}  |  Origin calls: {handler.CallCount}  |  Elapsed: {sw.ElapsedMilliseconds} ms");
-    if (lastIfNoneMatch is not null)
-        Ok($"  If-None-Match sent : {lastIfNoneMatch}  -> injected automatically by CachingMiddleware");
+    Checks.That(handler.CallCount == 2, $"Status: {r3.StatusCode}  |  ETag: {r3.Headers.ETag}  |  Origin calls: {handler.CallCount}  (expected 2)  |  Elapsed: {sw.ElapsedMilliseconds} ms");
+    Checks.That(lastIfNoneMatch == "\"v1-abc\"", $"If-None-Match sent : {lastIfNoneMatch ?? "(none)"}  -> injected automatically by CachingMiddleware");
 
     Console.WriteLine();
     Info($"    Summary: 3 requests  ->  {handler.CallCount} origin call(s)  |  1 fresh hit served from memory in < 1 ms.");
@@ -276,7 +287,7 @@ static async Task Demo3_StaleWhileRevalidateAsync()
     Note("Time windows:");
     Note("  [0 … N]      FRESH   -> served from cache, no origin contact.");
     Note("  (N … N+M]    STALE   -> served instantly; background refresh starts silently.");
-    Note("  (N+M … 8)    EXPIRED -> treated as a normal cache miss (no stale serving).");
+    Note("  (N+M … ∞)    EXPIRED -> treated as a normal cache miss (no stale serving).");
     Note("");
     Note("The caller that triggers the background task pays ZERO extra latency.");
     Note("The next request after the refresh completes receives the updated entry.");
@@ -336,7 +347,8 @@ static async Task Demo3_StaleWhileRevalidateAsync()
     sw.Restart();
     var r2 = await client.GetAsync(url);
     sw.Stop();
-    Ok($"  Body: {await r2.Content.ReadAsStringAsync()}  |  Elapsed: {sw.ElapsedMilliseconds} ms  -> stale, served without waiting for origin");
+    string staleGenBody = await r2.Content.ReadAsStringAsync();
+    Checks.That(staleGenBody.Contains("\"generation\":1"), $"Body: {staleGenBody}  (expected gen=1 — stale)  |  Elapsed: {sw.ElapsedMilliseconds} ms  -> served without waiting for origin");
     Info("    Without SWR this request would have blocked ~30 ms waiting for origin.");
 
     // -- Wait for background -----------------------------------------------
@@ -360,10 +372,11 @@ static async Task Demo3_StaleWhileRevalidateAsync()
     sw.Restart();
     var r3 = await client.GetAsync(url);
     sw.Stop();
-    Ok($"  Body: {await r3.Content.ReadAsStringAsync()}  |  Elapsed: {sw.ElapsedMilliseconds} ms  -> fresh gen=2, served from cache");
+    string freshGenBody = await r3.Content.ReadAsStringAsync();
+    Checks.That(freshGenBody.Contains("\"generation\":2"), $"Body: {freshGenBody}  (expected gen=2 — refreshed in background)  |  Elapsed: {sw.ElapsedMilliseconds} ms  -> served from cache");
 
     Console.WriteLine();
-    Ok($"  Total origin calls : {gen}  (1 foreground + 1 background)");
+    Checks.That(gen == 2, $"Total origin calls : {gen}  (expected 2 — 1 foreground + 1 background)");
     Ok($"  Request #2 paid 0 ms of extra latency — background handled the refresh silently.");
 }
 
@@ -385,7 +398,7 @@ static async Task Demo4_StaleIfErrorAsync()
     Note("Time windows:");
     Note("  [0 … N]      FRESH   -> served from cache normally.");
     Note("  (N … N+E]    STALE   -> if origin returns 5xx, serve stale  (200 to caller).");
-    Note("  (N+E … 8)    EXPIRED -> error window closed, 5xx propagated to caller.");
+    Note("  (N+E … ∞)    EXPIRED -> error window closed, 5xx propagated to caller.");
     Note("");
     Note("Also activates if origin THROWS (connection refused, timeout, etc.).");
     Note("Blocked by the 'must-revalidate' directive (RFC 9111 §5.2.2.2).");
@@ -440,9 +453,10 @@ static async Task Demo4_StaleIfErrorAsync()
     Behind("  [CachingMiddleware] stale-if-error window ACTIVE  ->  serving stale response");
     Behind("  [CachingMiddleware] Caller receives 200 OK (original cached body), NOT 503");
     var r2 = await client.GetAsync(url);
-    Ok($"  Status returned to caller : {r2.StatusCode}  ->  200 (stale), NOT 503");
-    Ok($"  Body : {await r2.Content.ReadAsStringAsync()}  ->  original cached body");
-    Ok($"  Origin calls : {handler.CallCount}  ->  origin WAS contacted and returned 503, but caller was shielded");
+    Checks.That(r2.StatusCode == HttpStatusCode.OK, $"Status returned to caller : {r2.StatusCode}  (expected 200 stale, NOT 503)");
+    string staleErrBody = await r2.Content.ReadAsStringAsync();
+    Checks.That(staleErrBody.Contains("healthy"), $"Body : {staleErrBody}  (expected original cached body)");
+    Checks.That(handler.CallCount == 2, $"Origin calls : {handler.CallCount}  (expected 2 — origin WAS contacted and returned 503, but caller was shielded)");
 
     Console.WriteLine();
     Info("    Without stale-if-error: the caller would have received 503 ServiceUnavailable.");
@@ -498,7 +512,7 @@ static async Task Demo5_PerRequestPoliciesAsync()
         Behind("  [CoalescingHandler] Forwarding directly to origin");
         await c.SendAsync(req);
 
-        Ok($"  Origin calls: {h.CallCount}  (expected 2 — cache was bypassed on step B)");
+        Checks.That(h.CallCount == 2, $"Origin calls: {h.CallCount}  (expected 2 — cache was bypassed on step B)");
     }
 
     // -- ForceRevalidate ---------------------------------------------------
@@ -537,9 +551,8 @@ static async Task Demo5_PerRequestPoliciesAsync()
         Behind("  [CachingMiddleware] Injecting  If-None-Match: \"etag-v1\"  into outgoing request");
         await c.SendAsync(req);
 
-        Ok($"  Origin calls: {h.CallCount}  (expected 2 — revalidation forced despite fresh entry)");
-        if (ifNoneMatchSeen is not null)
-            Ok($"  If-None-Match sent: {ifNoneMatchSeen}  ? header injected automatically by CachingMiddleware");
+        Checks.That(h.CallCount == 2, $"Origin calls: {h.CallCount}  (expected 2 — revalidation forced despite fresh entry)");
+        Checks.That(ifNoneMatchSeen == "\"etag-v1\"", $"If-None-Match sent: {ifNoneMatchSeen ?? "(none)"}  -> header injected automatically by CachingMiddleware");
     }
 
     // -- NoStore -----------------------------------------------------------
@@ -570,7 +583,7 @@ static async Task Demo5_PerRequestPoliciesAsync()
         Behind("  [CachingMiddleware] MISS (nothing stored in step A)  ->  origin called");
         await c.GetAsync(url);
 
-        Ok($"  Origin calls: {h.CallCount}  (expected 2 — step A response was never cached)");
+        Checks.That(h.CallCount == 2, $"Origin calls: {h.CallCount}  (expected 2 — step A response was never cached)");
     }
 
     // -- BypassCoalescing -------------------------------------------------
@@ -599,7 +612,7 @@ static async Task Demo5_PerRequestPoliciesAsync()
         Behind("  [CoalescingHandler] 1 WINNER + 1 WAITER  ->  1 origin call");
         gate.SetResult(true);
         await Task.WhenAll(ta, tb);
-        Ok($"      2 requests  ->  {h.CallCount} origin call(s)   ->  deduplicated");
+        Checks.That(h.CallCount == 1, $"    2 requests  ->  {h.CallCount} origin call(s)  (expected 1 — deduplicated)");
     }
 
     // Experiment: 2 concurrent WITH bypass ? 2 origin calls
@@ -631,7 +644,7 @@ static async Task Demo5_PerRequestPoliciesAsync()
         Behind("  [CoalescingHandler] BypassCoalescing=true on both  ->  each goes independently");
         gate.SetResult(true);
         await Task.WhenAll(t1, t2);
-        Ok($"      2 requests  ->  {h.CallCount} origin call(s)   ->  NOT deduplicated (bypass active)");
+        Checks.That(h.CallCount == 2, $"    2 requests  ->  {h.CallCount} origin call(s)  (expected 2 — NOT deduplicated, bypass active)");
     }
 }
 
@@ -650,7 +663,7 @@ static async Task Demo6_UnsafeMethodInvalidationAsync()
     Note("          · The request URL itself.");
     Note("          · Any URL in the response  Location  header.");
     Note("          · Any URL in the response  Content-Location  header.");
-    Note("          The next GET to that URL is a guaranteed MISS ? fresh data.");
+    Note("          The next GET to that URL is a guaranteed MISS → fresh data.");
     Console.WriteLine();
 
     int getVersion = 0;
@@ -680,13 +693,13 @@ static async Task Demo6_UnsafeMethodInvalidationAsync()
     Behind("  [CachingMiddleware] Forwarding to origin");
     var r1 = await client.GetAsync(url);
     Behind($"  [CachingMiddleware] Stored  version=1  (max-age=60  ->  expires in 60 s)");
-    Ok($"  Body: {await r1.Content.ReadAsStringAsync()}   Origin calls: {handler.CallCount}");
+    Checks.That(handler.CallCount == 1, $"Body: {await r1.Content.ReadAsStringAsync()}   Origin calls: {handler.CallCount}  (expected 1)");
 
     Console.WriteLine();
     Step("GET /items/99  #2  —  entry FRESH  ->  HIT  ->  origin NOT contacted");
     Behind("  [CachingMiddleware] Cache lookup  ->  fresh entry found  ->  HIT");
     var r2 = await client.GetAsync(url);
-    Ok($"  Body: {await r2.Content.ReadAsStringAsync()}   Origin calls: {handler.CallCount}  ->  unchanged (cache hit)");
+    Checks.That(handler.CallCount == 1, $"Body: {await r2.Content.ReadAsStringAsync()}   Origin calls: {handler.CallCount}  (expected 1 — unchanged, cache hit)");
 
     Console.WriteLine();
     Step("DELETE /items/99  —  unsafe method  ->  2xx returned  ->  cache entry EVICTED");
@@ -694,7 +707,7 @@ static async Task Demo6_UnsafeMethodInvalidationAsync()
     Behind("  [CachingMiddleware] Origin returned 2xx (204 No Content)");
     Behind("  [CachingMiddleware] RFC 9111 §4.4 triggered  ->  evicting entry for  " + url);
     await client.DeleteAsync(url);
-    Ok($"  Origin calls: {handler.CallCount}  (DELETE counted as origin call)");
+    Checks.That(handler.CallCount == 2, $"Origin calls: {handler.CallCount}  (expected 2 — DELETE counted as origin call)");
 
     Console.WriteLine();
     Step("GET /items/99  #3  —  cache EMPTY (invalidated)  ->  MISS  ->  fresh origin call");
@@ -702,7 +715,8 @@ static async Task Demo6_UnsafeMethodInvalidationAsync()
     Behind("  [CachingMiddleware] Forwarding to origin  ->  fresh response");
     var r3 = await client.GetAsync(url);
     Behind($"  [CachingMiddleware] Stored  version=2  (fresh data)");
-    Ok($"  Body: {await r3.Content.ReadAsStringAsync()}   Origin calls: {handler.CallCount}  ->  version=2 fetched after invalidation");
+    string invalidatedBody = await r3.Content.ReadAsStringAsync();
+    Checks.That(invalidatedBody.Contains("\"version\":2") && handler.CallCount == 3, $"Body: {invalidatedBody}   Origin calls: {handler.CallCount}  (expected version=2 and 3 calls — fetched after invalidation)");
 
     Console.WriteLine();
     Info("    Without invalidation: GET #3 would have served version=1 (stale) for 60 s.");
@@ -767,7 +781,7 @@ static async Task Demo7_MetricsAsync()
     Info("    Expected:  cache.misses += 5  |  coalescing.deduplicated += 4  |  1 origin call");
     var concurrent = Enumerable.Range(0, 5).Select(_ => client.GetAsync(url)).ToArray();
     await Task.WhenAll(concurrent);
-    Behind("  [CachingMiddleware] 5 concurrent requests  ?  5 separate cache misses");
+    Behind("  [CachingMiddleware] 5 concurrent requests  →  5 separate cache misses");
     Behind("  [CoalescingHandler] 1 winner called origin  —  4 waiters were deduplicated");
     Behind($"  [Origin] Called {handler.CallCount} time(s)");
 
@@ -819,6 +833,11 @@ static async Task Demo7_MetricsAsync()
     AnsiConsole.Write(table);
 
     Console.WriteLine();
+    long C(string name) { lock (counters) { return counters.TryGetValue(name, out long v) ? v : 0; } }
+    Checks.That(handler.CallCount == 1, $"Origin calls : {handler.CallCount}  (expected 1 — the coalescing winner)");
+    Checks.That(C("stampede_http.cache.hits") == 2, $"cache.hits = {C("stampede_http.cache.hits")}  (expected 2 — Scenario B)");
+    Checks.That(C("stampede_http.cache.misses") == 5, $"cache.misses = {C("stampede_http.cache.misses")}  (expected 5 — Scenario A)");
+    Checks.That(C("stampede_http.coalescing.deduplicated") == 4, $"coalescing.deduplicated = {C("stampede_http.coalescing.deduplicated")}  (expected 4 — Scenario A waiters)");
     Info($"    7 requests total (5+2)  |  {handler.CallCount} origin call(s)  |  {7 - handler.CallCount} served without touching the network.");
 }
 
@@ -856,7 +875,12 @@ static HttpClient BuildClientCacheOnly(DemoHandler handler)
 
 static void Banner(string title, ConsoleColor color = ConsoleColor.Cyan)
 {
-    var ruleColor = color == ConsoleColor.Green ? Color.Green : Color.Cyan1;
+    var ruleColor = color switch
+    {
+        ConsoleColor.Green => Color.Green,
+        ConsoleColor.Red => Color.Red,
+        _ => Color.Cyan1,
+    };
     AnsiConsole.WriteLine();
     AnsiConsole.Write(new Rule($"[bold]{Markup.Escape(title)}[/]") { Style = new Style(ruleColor) });
 }
@@ -865,15 +889,37 @@ static void Sep() =>
     AnsiConsole.Write(new Rule() { Style = new Style(Color.Grey) });
 
 static void Note(string text) => AnsiConsole.MarkupLine($"[cyan]  ¦ {Markup.Escape(text)}[/]");
-static void Behind(string text) => AnsiConsole.MarkupLine($"[mediumpurple2]  ? {Markup.Escape(text)}[/]");
-static void Step(string text) => AnsiConsole.MarkupLine($"\n[bold yellow]  ? {Markup.Escape(text)}[/]");
-static void Ok(string text) => AnsiConsole.MarkupLine($"[green]    ? {Markup.Escape(text)}[/]");
+static void Behind(string text) => AnsiConsole.MarkupLine($"[mediumpurple2]  ↪ {Markup.Escape(text)}[/]");
+static void Step(string text) => AnsiConsole.MarkupLine($"\n[bold yellow]  ▶ {Markup.Escape(text)}[/]");
+static void Ok(string text) => AnsiConsole.MarkupLine($"[green]    ✓ {Markup.Escape(text)}[/]");
 static void Info(string text) => AnsiConsole.MarkupLine($"[dim]    · {Markup.Escape(text)}[/]");
-static void Warn(string text) => AnsiConsole.MarkupLine($"[darkorange]    ? {Markup.Escape(text)}[/]");
+static void Warn(string text) => AnsiConsole.MarkupLine($"[darkorange]    ⚠ {Markup.Escape(text)}[/]");
 
 // -------------------------------------------------------------------------
 // DemoHandler — configurable fake HTTP server
 // -------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------
+// Checks — verified expectations (the demo doubles as an e2e smoke test)
+// -------------------------------------------------------------------------
+
+static class Checks
+{
+    public static int Failures;
+
+    public static void That(bool ok, string message)
+    {
+        if (ok)
+        {
+            AnsiConsole.MarkupLine($"[green]    ✓ {Markup.Escape(message)}[/]");
+        }
+        else
+        {
+            Failures++;
+            AnsiConsole.MarkupLine($"[bold red]    ✗ {Markup.Escape(message)}   <-- CHECK FAILED[/]");
+        }
+    }
+}
 
 sealed class DemoHandler : HttpMessageHandler
 {

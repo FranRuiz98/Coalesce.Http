@@ -29,3 +29,6 @@ jobs:
 
       - name: Test
         run: dotnet test Stampede.Http.Tests -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Demo smoke test
+        run: dotnet run -c Release --no-build --project Stampede.Http.Demo
