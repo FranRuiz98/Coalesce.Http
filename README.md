@@ -64,6 +64,25 @@ services.AddHttpClient("catalog")
 
 ---
 
+## How it compares
+
+Coalesce.Http occupies a specific niche: **origin-controlled caching semantics inside the `HttpClient` pipeline**. The origin server decides what is cacheable and for how long (via `Cache-Control`, `ETag`, `Vary`…); your application code never touches a cache key.
+
+| | Coalesce.Http | [CacheCow.Client](https://github.com/aliostad/CacheCow) | [FusionCache](https://github.com/ZiggyCreatures/FusionCache) / [HybridCache](https://learn.microsoft.com/aspnet/core/performance/caching/hybrid) | [Polly v8](https://github.com/App-vNext/Polly) |
+|---|---|---|---|---|
+| Where it sits | `HttpClient` pipeline | `HttpClient` pipeline | Application code (cache-aside) | `HttpClient` pipeline |
+| Header-driven HTTP caching | ✅ RFC 9111 | ✅ RFC 7234 | ❌ manual keys + TTLs | ❌ removed in v8 |
+| Request coalescing / stampede protection | ✅ at the HTTP layer | ❌ | ✅ at the app layer | ❌ |
+| Stale extensions | ✅ `stale-if-error` + `stale-while-revalidate` (RFC 5861) | ❌ | ✅ own semantics (fail-safe, eager refresh) | ❌ |
+| Distributed second level | ✅ any `IDistributedCache` | ✅ own stores | ✅ | — |
+| Retries, circuit breakers, timeouts | ❌ chain Polly | ❌ | ❌ | ✅ |
+
+- **FusionCache / HybridCache** are excellent app-level caches — reach for them when you cache *computed results* and want full control over keys and TTLs. Reach for Coalesce.Http when the data source is HTTP and you want the origin's caching headers respected automatically.
+- **CacheCow** pioneered this space and takes the same pipeline approach; its last stable release (2.13.1) dates from January 2024, targets the older RFC 7234, and does not coalesce concurrent requests.
+- **Polly** is a complement, not an alternative: it dropped its cache policy in v8 and handles the resilience half (retries, hedging, circuit breakers). Chain it after Coalesce.Http as shown [above](#with-polly-resilience).
+
+---
+
 ## Configuration
 
 ### CacheOptions
