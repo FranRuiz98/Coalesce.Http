@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Coalesce.Http.slnx
+
+      - name: Build
+        run: dotnet build Coalesce.Http.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test Coalesce.Http.Tests -c Release --no-build --logger "console;verbosity=normal"

@@ -5,7 +5,7 @@
 [![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
-[![Tests](https://img.shields.io/badge/tests-318%20passed-brightgreen)](#running-the-tests)
+[![CI](https://github.com/FranRuiz98/Coalesce.Http/actions/workflows/ci.yml/badge.svg)](https://github.com/FranRuiz98/Coalesce.Http/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
 **Coalesce.Http** is a thin, composable `DelegatingHandler` layer that adds caching and request deduplication to any named `HttpClient`. It does not replace `HttpClient` or Polly — it slots right into the existing pipeline.
