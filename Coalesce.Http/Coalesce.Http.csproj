@@ -5,12 +5,12 @@
     <Version>1.2.0</Version>
     <PackageVersion>1.2.0</PackageVersion>
     <Authors>FranRuiz98</Authors>
-    <Description>Advanced HTTP pipeline extensions for .NET — request coalescing, RFC 9111 caching, and seamless Polly integration.</Description>
+    <Description>RFC 9111 HTTP caching and request coalescing for the .NET HttpClient pipeline. Deduplicates concurrent requests, prevents cache stampedes, and adds ETag/Last-Modified revalidation, stale-while-revalidate and stale-if-error (RFC 5861), and distributed cache support — composable DelegatingHandlers that slot in alongside Polly.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/FranRuiz98/Coalesce.Http</PackageProjectUrl>
     <RepositoryUrl>https://github.com/FranRuiz98/Coalesce.Http</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>http;caching;coalescing;rfc9111;rfc5861;httpclient;polly;deduplication;request-coalescing</PackageTags>
+    <PackageTags>http;cache;caching;coalescing;rfc9111;rfc5861;httpclient;polly;deduplication;request-coalescing;cache-stampede;stampede;singleflight;thundering-herd;stale-while-revalidate;stale-if-error;etag;distributed-cache;resilience</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Copyright>Copyright (c) FranRuiz98</Copyright>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
