@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Stampede.Http.Benchmarks/Stampede.Http.Benchmarks.csproj" />
+  <Project Path="Stampede.Http.Demo/Stampede.Http.Demo.csproj" />
+  <Project Path="Stampede.Http.Tests/Stampede.Http.Tests.csproj" />
+  <Project Path="Stampede.Http/Stampede.Http.csproj" />
+</Solution>

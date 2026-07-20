@@ -1,16 +1,19 @@
-# Coalesce.Http
+# Stampede.Http
 
 > RFC 9111 HTTP caching and request coalescing for the .NET `HttpClient` pipeline.
 
-[![NuGet](https://img.shields.io/nuget/v/Coalesce.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Coalesce.Http)
+[![NuGet](https://img.shields.io/nuget/v/Stampede.Http?label=NuGet&color=blue)](https://www.nuget.org/packages/Stampede.Http)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
-[![CI](https://github.com/FranRuiz98/Coalesce.Http/actions/workflows/ci.yml/badge.svg)](https://github.com/FranRuiz98/Coalesce.Http/actions/workflows/ci.yml)
+[![CI](https://github.com/FranRuiz98/Stampede.Http/actions/workflows/ci.yml/badge.svg)](https://github.com/FranRuiz98/Stampede.Http/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
-**Coalesce.Http** is a thin, composable `DelegatingHandler` layer that adds caching and request deduplication to any named `HttpClient`. It does not replace `HttpClient` or Polly — it slots right into the existing pipeline.
+> [!NOTE]
+> Stampede.Http was formerly published as **Coalesce.Http** (versions ≤ 1.2.0). Same library, new name — see the [v2.0.0 changelog](#v200) for the migration guide.
 
-| Problem | What Coalesce.Http does |
+**Stampede.Http** is a thin, composable `DelegatingHandler` layer that adds caching and request deduplication to any named `HttpClient`. It does not replace `HttpClient` or Polly — it slots right into the existing pipeline.
+
+| Problem | What Stampede.Http does |
 |---|---|
 | Thundering herd of duplicate concurrent requests | **Coalesces** them into a single backend call |
 | Repeated fetches for unchanged resources | **RFC 9111 caching** with ETag/Last-Modified revalidation |
@@ -24,7 +27,7 @@
 ## Installation
 
 ```bash
-dotnet add package Coalesce.Http
+dotnet add package Stampede.Http
 ```
 
 Requires **.NET 8.0** or later. No third-party dependencies — only `Microsoft.Extensions.*`.
@@ -36,7 +39,7 @@ Requires **.NET 8.0** or later. No third-party dependencies — only `Microsoft.
 ```csharp
 builder.Services
     .AddHttpClient("catalog")
-    .AddCoalesceHttp(
+    .AddStampedeHttp(
         configureCaching:    o => o.DefaultTtl = TimeSpan.FromSeconds(60),
         configureCoalescing: o => o.CoalescingTimeout = TimeSpan.FromSeconds(5)
     );
@@ -53,11 +56,11 @@ CachingMiddleware       ← cache hits served here, no network call
 
 ### With Polly resilience
 
-Always chain `AddResilienceHandler` **after** `AddCoalesceHttp` so Polly sits between the coalescer and the transport:
+Always chain `AddResilienceHandler` **after** `AddStampedeHttp` so Polly sits between the coalescer and the transport:
 
 ```csharp
 services.AddHttpClient("catalog")
-    .AddCoalesceHttp()
+    .AddStampedeHttp()
     .AddResilienceHandler("resilience", b =>
         b.AddRetry(new HttpRetryStrategyOptions { MaxRetryAttempts = 3 }));
 ```
@@ -66,9 +69,9 @@ services.AddHttpClient("catalog")
 
 ## How it compares
 
-Coalesce.Http occupies a specific niche: **origin-controlled caching semantics inside the `HttpClient` pipeline**. The origin server decides what is cacheable and for how long (via `Cache-Control`, `ETag`, `Vary`…); your application code never touches a cache key.
+Stampede.Http occupies a specific niche: **origin-controlled caching semantics inside the `HttpClient` pipeline**. The origin server decides what is cacheable and for how long (via `Cache-Control`, `ETag`, `Vary`…); your application code never touches a cache key.
 
-| | Coalesce.Http | [CacheCow.Client](https://github.com/aliostad/CacheCow) | [FusionCache](https://github.com/ZiggyCreatures/FusionCache) / [HybridCache](https://learn.microsoft.com/aspnet/core/performance/caching/hybrid) | [Polly v8](https://github.com/App-vNext/Polly) |
+| | Stampede.Http | [CacheCow.Client](https://github.com/aliostad/CacheCow) | [FusionCache](https://github.com/ZiggyCreatures/FusionCache) / [HybridCache](https://learn.microsoft.com/aspnet/core/performance/caching/hybrid) | [Polly v8](https://github.com/App-vNext/Polly) |
 |---|---|---|---|---|
 | Where it sits | `HttpClient` pipeline | `HttpClient` pipeline | Application code (cache-aside) | `HttpClient` pipeline |
 | Header-driven HTTP caching | ✅ RFC 9111 | ✅ RFC 7234 | ❌ manual keys + TTLs | ❌ removed in v8 |
@@ -77,9 +80,9 @@ Coalesce.Http occupies a specific niche: **origin-controlled caching semantics i
 | Distributed second level | ✅ any `IDistributedCache` | ✅ own stores | ✅ | — |
 | Retries, circuit breakers, timeouts | ❌ chain Polly | ❌ | ❌ | ✅ |
 
-- **FusionCache / HybridCache** are excellent app-level caches — reach for them when you cache *computed results* and want full control over keys and TTLs. Reach for Coalesce.Http when the data source is HTTP and you want the origin's caching headers respected automatically.
+- **FusionCache / HybridCache** are excellent app-level caches — reach for them when you cache *computed results* and want full control over keys and TTLs. Reach for Stampede.Http when the data source is HTTP and you want the origin's caching headers respected automatically.
 - **CacheCow** pioneered this space and takes the same pipeline approach; its last stable release (2.13.1) dates from January 2024, targets the older RFC 7234, and does not coalesce concurrent requests.
-- **Polly** is a complement, not an alternative: it dropped its cache policy in v8 and handles the resilience half (retries, hedging, circuit breakers). Chain it after Coalesce.Http as shown [above](#with-polly-resilience).
+- **Polly** is a complement, not an alternative: it dropped its cache policy in v8 and handles the resilience half (retries, hedging, circuit breakers). Chain it after Stampede.Http as shown [above](#with-polly-resilience).
 
 ---
 
@@ -113,7 +116,7 @@ Both options classes are registered as **named options** (`IOptionsMonitor<T>`) 
 
 | Method | What it registers |
 |---|---|
-| `AddCoalesceHttp()` | `CachingMiddleware` + `CoalescingHandler` + metrics |
+| `AddStampedeHttp()` | `CachingMiddleware` + `CoalescingHandler` + metrics |
 | `AddCachingOnly()` | `CachingMiddleware` + metrics |
 | `AddCoalescingOnly()` | `CoalescingHandler` + metrics |
 | `UseDistributedCacheStore()` | Replaces `MemoryCacheStore` with `DistributedCacheStore` (chain after the above) |
@@ -131,7 +134,7 @@ builder.Services.AddStackExchangeRedisCache(o =>
 
 builder.Services
     .AddHttpClient("catalog")
-    .AddCoalesceHttp(configureCaching: o => o.DefaultTtl = TimeSpan.FromMinutes(5))
+    .AddStampedeHttp(configureCaching: o => o.DefaultTtl = TimeSpan.FromMinutes(5))
     .UseDistributedCacheStore();
 ```
 
@@ -168,24 +171,24 @@ request.Options.Set(CacheRequestPolicy.BypassCache, true);
 
 ## Metrics
 
-All instruments live under the **`Coalesce.Http`** meter.
+All instruments live under the **`Stampede.Http`** meter.
 
 ```csharp
 builder.Services.AddOpenTelemetry()
-    .WithMetrics(m => m.AddMeter("Coalesce.Http"));
+    .WithMetrics(m => m.AddMeter("Stampede.Http"));
 ```
 
 | Instrument | Type | Description |
 |---|---|---|
-| `coalesce_http.cache.hits` | Counter | Requests served from cache |
-| `coalesce_http.cache.misses` | Counter | Requests forwarded to the origin |
-| `coalesce_http.cache.revalidations` | Counter | Conditional revalidation requests sent |
-| `coalesce_http.cache.stale_errors_served` | Counter | Stale responses served under stale-if-error |
-| `coalesce_http.cache.stale_while_revalidate_served` | Counter | Stale responses served during background revalidation |
-| `coalesce_http.cache.invalidations` | Counter | Entries evicted by unsafe method responses |
-| `coalesce_http.coalescing.deduplicated` | Counter | Requests that reused an in-flight response |
-| `coalesce_http.coalescing.inflight` | UpDownCounter | Current in-flight coalesced origin calls |
-| `coalesce_http.coalescing.timeouts` | Counter | Waiters that timed out and fell back to independent execution |
+| `stampede_http.cache.hits` | Counter | Requests served from cache |
+| `stampede_http.cache.misses` | Counter | Requests forwarded to the origin |
+| `stampede_http.cache.revalidations` | Counter | Conditional revalidation requests sent |
+| `stampede_http.cache.stale_errors_served` | Counter | Stale responses served under stale-if-error |
+| `stampede_http.cache.stale_while_revalidate_served` | Counter | Stale responses served during background revalidation |
+| `stampede_http.cache.invalidations` | Counter | Entries evicted by unsafe method responses |
+| `stampede_http.coalescing.deduplicated` | Counter | Requests that reused an in-flight response |
+| `stampede_http.coalescing.inflight` | UpDownCounter | Current in-flight coalesced origin calls |
+| `stampede_http.coalescing.timeouts` | Counter | Waiters that timed out and fell back to independent execution |
 
 ---
 
@@ -216,7 +219,7 @@ BenchmarkDotNet v0.15.2 · .NET 10 · Windows 11 · i7-12650H.
 ## Running the tests
 
 ```bash
-dotnet test Coalesce.Http.Tests
+dotnet test Stampede.Http.Tests
 ```
 
 318 tests covering RFC 9111 caching, RFC 5861 stale extensions, request coalescing, distributed cache store, per-request policies, metrics, Polly integration (retry + hedging), and more.
@@ -240,6 +243,14 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## Changelog
+
+### v2.0.0
+- **Package renamed: `Coalesce.Http` → `Stampede.Http`.** Same library, same feature set; the new name reflects what it does — stopping cache stampedes. Migration:
+  - Package reference: `dotnet remove package Coalesce.Http && dotnet add package Stampede.Http`
+  - Namespaces: `Coalesce.Http.*` → `Stampede.Http.*`
+  - Registration: `AddCoalesceHttp(...)` → `AddStampedeHttp(...)` (`AddCachingOnly`, `AddCoalescingOnly` and `UseDistributedCacheStore` are unchanged)
+  - Metrics: meter `Coalesce.Http` → `Stampede.Http`; instruments `coalesce_http.*` → `stampede_http.*` — update your OpenTelemetry meter registration and dashboards
+  - Technique-level API names (`CoalescingHandler`, `CoalescerOptions`, `CoalesceKeyHeaders`, `CoalescingRequestPolicy`…) are unchanged
 
 ### v1.2.0
 - **`IOptionsMonitor<T>` for runtime reconfiguration** — `CacheOptions` and `CoalescerOptions` are registered as named options keyed by client name. Runtime-tuneable settings (`DefaultTtl`, `MaxBodySizeBytes`, `Enabled`, `CoalescingTimeout`, `CoalesceKeyHeaders`, etc.) take effect immediately on configuration reload. Structural options (`MaxCacheSize`, `NormalizeQueryParameters`) are still read at registration time.
