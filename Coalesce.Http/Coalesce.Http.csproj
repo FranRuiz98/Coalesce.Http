@@ -40,7 +40,6 @@
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="9.0.0" PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup>

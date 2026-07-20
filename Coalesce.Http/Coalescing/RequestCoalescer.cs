@@ -30,6 +30,7 @@ internal sealed partial class RequestCoalescer(IOptionsMonitor<CoalescerOptions>
     /// </summary>
     /// <param name="key">The request key for coalescing</param>
     /// <param name="factory">Factory function to execute the actual HTTP request</param>
+    /// <param name="cancellationToken">Cancels this caller's wait without affecting other waiters sharing the same execution</param>
     /// <returns>A cloned HttpResponseMessage for this caller</returns>
     public async Task<HttpResponseMessage> ExecuteAsync(
         RequestKey key,

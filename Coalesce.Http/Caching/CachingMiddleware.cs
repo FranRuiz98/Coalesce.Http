@@ -150,6 +150,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// Stores the specified HTTP response in the cache using the provided key.
     /// </summary>
     /// <param name="key">The cache key under which the response should be stored.</param>
+    /// <param name="request">The request that produced the response; its headers are captured for <c>Vary</c> handling.</param>
     /// <param name="response">The HTTP response message to be cached.</param>
     /// <param name="ct">A cancellation token to observe while waiting for the task to complete.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>

@@ -7,12 +7,6 @@ namespace Coalesce.Http.Caching;
 /// </summary>
 /// <remarks>This record is intended for internal use and encapsulates all relevant metadata required to manage
 /// cached HTTP responses efficiently.</remarks>
-/// <param name="StatusCode">The HTTP status code returned by the cached response.</param>
-/// <param name="ContentType">The media type of the cached content. May be null if not specified.</param>
-/// <param name="Body">The raw byte array containing the body of the cached response.</param>
-/// <param name="Headers">A read-only dictionary of HTTP headers associated with the cached response. Each key maps to an array of header
-/// values.</param>
-/// <param name="ExpiresAt">The date and time when the cached entry expires and is no longer valid.</param>
 [JsonConverter(typeof(CacheEntryJsonConverter))]
 public sealed record CacheEntry
 {
@@ -25,7 +19,7 @@ public sealed record CacheEntry
     /// <summary>Response header fields captured at store time and replayed on cache hits (RFC 9111 §3.1 — a cache MUST store and forward the original header fields).</summary>
     public required IReadOnlyDictionary<string, string[]> Headers { get; init; }
 
-    /// <summary>Absolute point in time at which the freshness lifetime ends (RFC 9111 §4.2 — once exceeded, <see cref="IsExpired"/> returns <see langword="true"/> and the entry must be revalidated or discarded).</summary>
+    /// <summary>Absolute point in time at which the freshness lifetime ends (RFC 9111 §4.2 — once exceeded, <see cref="IsExpired()"/> returns <see langword="true"/> and the entry must be revalidated or discarded).</summary>
     public required DateTimeOffset ExpiresAt { get; init; }
 
     /// <summary>The date and time at which this entry was stored, used to compute the <c>Age</c> response header (RFC 9111 §5.1).</summary>

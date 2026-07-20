@@ -12,6 +12,10 @@ using Microsoft.Extensions.Options;
 
 namespace Coalesce.Http.Extensions;
 
+/// <summary>
+/// Extension methods for <see cref="IHttpClientBuilder"/> that add Coalesce.Http caching
+/// and request-coalescing handlers to the <see cref="HttpClient"/> pipeline.
+/// </summary>
 public static class HttpClientBuilderExtensions
 {
     /// <summary>
@@ -154,7 +158,7 @@ public static class HttpClientBuilderExtensions
     /// </code>
     /// <para>
     /// Cache entries are serialized with <see cref="System.Text.Json"/> and the
-    /// <c>AbsoluteExpiration</c> is set to <see cref="CacheEntry.ExpiresAt"/> so the backing store
+    /// <c>AbsoluteExpiration</c> is set to <see cref="Caching.CacheEntry.ExpiresAt"/> so the backing store
     /// evicts stale entries automatically.
     /// </para>
     /// </remarks>
