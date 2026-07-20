@@ -109,6 +109,37 @@ public class CacheOptionsTests
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
+    // ── RevalidationGraceSeconds ──────────────────────────────────────────────
+
+    [Fact]
+    public void RevalidationGraceSeconds_DefaultIs300()
+    {
+        var options = new CacheOptions();
+        options.RevalidationGraceSeconds.Should().Be(300);
+    }
+
+    [Fact]
+    public void RevalidationGraceSeconds_PositiveValue_IsAccepted()
+    {
+        var options = new CacheOptions { RevalidationGraceSeconds = 60 };
+        options.RevalidationGraceSeconds.Should().Be(60);
+    }
+
+    [Fact]
+    public void RevalidationGraceSeconds_Zero_IsAllowed()
+    {
+        var options = new CacheOptions { RevalidationGraceSeconds = 0 };
+        options.RevalidationGraceSeconds.Should().Be(0);
+    }
+
+    [Fact]
+    public void RevalidationGraceSeconds_Negative_Throws()
+    {
+        var options = new CacheOptions();
+        var act = () => options.RevalidationGraceSeconds = -1;
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
     // ── MaxCacheSize ──────────────────────────────────────────────────────────
 
     [Fact]

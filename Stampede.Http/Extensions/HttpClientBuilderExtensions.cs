@@ -158,8 +158,9 @@ public static class HttpClientBuilderExtensions
     /// </code>
     /// <para>
     /// Cache entries are serialized with <see cref="System.Text.Json"/> and the
-    /// <c>AbsoluteExpiration</c> is set to <see cref="Caching.CacheEntry.ExpiresAt"/> so the backing store
-    /// evicts stale entries automatically.
+    /// <c>AbsoluteExpiration</c> is derived from <see cref="Caching.CacheEntry.ExpiresAt"/> — extended by
+    /// the stale windows and, for entries with a validator, <see cref="CacheOptions.RevalidationGraceSeconds"/> —
+    /// so the backing store evicts entries automatically once they can no longer be served or revalidated.
     /// </para>
     /// </remarks>
     /// <param name="builder">The <see cref="IHttpClientBuilder"/> to configure.</param>
@@ -188,7 +189,9 @@ public static class HttpClientBuilderExtensions
         }
 
         _ = builder.Services.AddKeyedSingleton<ICacheStore>(clientName, (sp, _) =>
-            new DistributedCacheStore(sp.GetRequiredService<IDistributedCache>()));
+            new DistributedCacheStore(
+                sp.GetRequiredService<IDistributedCache>(),
+                sp.GetRequiredService<IOptionsMonitor<CacheOptions>>().Get(clientName)));
 
         _ = builder.Services.AddSingleton<ICacheStore>(sp =>
             sp.GetRequiredKeyedService<ICacheStore>(clientName));
@@ -242,8 +245,9 @@ public static class HttpClientBuilderExtensions
             _ = builder.Services.Configure<CacheOptions>(clientName, configure);
         }
 
-        // Read structural options eagerly — MaxCacheSize and NormalizeQueryParameters configure
-        // IMemoryCache and ICacheKeyBuilder at creation time and cannot change at runtime.
+        // Read structural options eagerly — MaxCacheSize, NormalizeQueryParameters and
+        // RevalidationGraceSeconds configure IMemoryCache, ICacheKeyBuilder and ICacheStore
+        // at creation time and cannot change at runtime.
         CacheOptions structuralOptions = new();
         configure?.Invoke(structuralOptions);
 
@@ -268,7 +272,7 @@ public static class HttpClientBuilderExtensions
         // Per-client cache store backed by the client's own IMemoryCache.
         builder.Services.TryAdd(
             ServiceDescriptor.KeyedSingleton<ICacheStore>(clientName, (sp, _) =>
-                new MemoryCacheStore(sp.GetRequiredKeyedService<IMemoryCache>(clientName))));
+                new MemoryCacheStore(sp.GetRequiredKeyedService<IMemoryCache>(clientName), structuralOptions)));
 
         // Backward compatibility: non-keyed resolution returns the first-registered client's services.
         builder.Services.TryAddSingleton<ICacheKeyBuilder>(sp =>

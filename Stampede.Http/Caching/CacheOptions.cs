@@ -14,6 +14,7 @@ public sealed class CacheOptions
     private long _defaultStaleIfErrorSeconds;
     private long _defaultStaleWhileRevalidateSeconds;
     private long? _maxCacheSize;
+    private long _revalidationGraceSeconds = 300;
 
     /// <summary>
     /// Gets or sets the default time-to-live (TTL) duration for cache entries.
@@ -99,6 +100,34 @@ public sealed class CacheOptions
             }
 
             _maxCacheSize = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets how many seconds a stale entry that carries a validator (<c>ETag</c> or
+    /// <c>Last-Modified</c>) is retained in the backing store beyond its freshness lifetime and
+    /// stale windows, so the next request can send a conditional
+    /// <c>If-None-Match</c> / <c>If-Modified-Since</c> revalidation instead of a full refetch.
+    /// </summary>
+    /// <remarks>
+    /// <para>Without this grace period, an entry with <c>max-age=N</c> and no stale windows is
+    /// physically evicted from the store exactly when it becomes stale, making conditional
+    /// revalidation (RFC 9111 §4.3) impossible — every expiry degrades to a full refetch.
+    /// The default of <c>300</c> keeps validator-carrying entries around for five minutes past
+    /// their last usable window; each successful revalidation refreshes the entry and restarts
+    /// the retention window. A value of <c>0</c> restores eviction at expiry.</para>
+    /// <para>Entries without a validator are unaffected. Like <see cref="MaxCacheSize"/>, this is
+    /// a structural option: it is read when the cache store is created and does not respond to
+    /// runtime configuration reloads.</para>
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
+    public long RevalidationGraceSeconds
+    {
+        get => _revalidationGraceSeconds;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            _revalidationGraceSeconds = value;
         }
     }
 

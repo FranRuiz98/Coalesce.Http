@@ -24,12 +24,20 @@ namespace Stampede.Http.Caching;
 /// the source-generated <see cref="CacheEntryJsonContext"/>
 /// The <see cref="DistributedCacheEntryOptions.AbsoluteExpiration"/> is extended
 /// by <c>Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)</c> beyond <see cref="CacheEntry.ExpiresAt"/>
-/// so the backing store retains entries long enough for stale serving while still evicting them once
-/// all configured windows have expired, even between process restarts.
+/// — plus <see cref="CacheOptions.RevalidationGraceSeconds"/> when the entry carries an <c>ETag</c> or
+/// <c>Last-Modified</c> validator — so the backing store retains entries long enough for stale serving
+/// and conditional revalidation while still evicting them once all configured windows have expired,
+/// even between process restarts.
 /// </para>
 /// </remarks>
-public sealed class DistributedCacheStore(IDistributedCache distributedCache) : ICacheStore
+public sealed class DistributedCacheStore(IDistributedCache distributedCache, CacheOptions options) : ICacheStore
 {
+    /// <summary>
+    /// Creates a store with default <see cref="CacheOptions"/> (five-minute revalidation grace).
+    /// </summary>
+    /// <param name="distributedCache">The <see cref="IDistributedCache"/> backing this store.</param>
+    public DistributedCacheStore(IDistributedCache distributedCache) : this(distributedCache, new CacheOptions()) { }
+
     /// <inheritdoc/>
     public bool TryGetValue(string key, out CacheEntry? entry)
     {
@@ -84,19 +92,21 @@ public sealed class DistributedCacheStore(IDistributedCache distributedCache) : 
     }
 
     /// <summary>
-    /// 
     /// Serializes <paramref name="entry"/> to UTF-8 JSON using the source-generated context and
     /// builds the <see cref="DistributedCacheEntryOptions"/> with an <c>AbsoluteExpiration</c>
-    /// extended by the maximum stale window so entries remain available for stale-if-error and
-    /// stale-while-revalidate serving after <see cref="CacheEntry.ExpiresAt"/>.
+    /// extended by the maximum stale window — plus the revalidation grace period when the entry
+    /// carries a validator — so entries remain available for stale-if-error / stale-while-revalidate
+    /// serving and conditional revalidation after <see cref="CacheEntry.ExpiresAt"/>.
     /// </summary>
-    private static (byte[] Bytes, DistributedCacheEntryOptions Options) Serialize(CacheEntry entry)
+    private (byte[] Bytes, DistributedCacheEntryOptions Options) Serialize(CacheEntry entry)
     {
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(entry, CacheEntryJsonContext.Default.CacheEntry);
 
         long staleWindowSeconds = Math.Max(entry.StaleIfErrorSeconds, entry.StaleWhileRevalidateSeconds);
-        DateTimeOffset absoluteExpiration = staleWindowSeconds > 0
-            ? entry.ExpiresAt + TimeSpan.FromSeconds(staleWindowSeconds)
+        long graceSeconds = MemoryCacheStore.HasValidator(entry) ? options.RevalidationGraceSeconds : 0;
+        long extensionSeconds = staleWindowSeconds + graceSeconds;
+        DateTimeOffset absoluteExpiration = extensionSeconds > 0
+            ? entry.ExpiresAt + TimeSpan.FromSeconds(extensionSeconds)
             : entry.ExpiresAt;
 
         return (bytes, new DistributedCacheEntryOptions { AbsoluteExpiration = absoluteExpiration });
