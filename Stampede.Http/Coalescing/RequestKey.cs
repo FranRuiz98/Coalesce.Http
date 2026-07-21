@@ -4,6 +4,15 @@ namespace Stampede.Http.Coalescing;
 
 internal readonly record struct RequestKey(string Method, string Url, string HeadersKey = "")
 {
+    /// <summary>
+    /// Conditional request headers (RFC 9110 §13) that change the meaning of a response — an
+    /// <c>If-None-Match</c> revalidation may yield a bodyless <c>304</c> that a non-conditional caller cannot
+    /// interpret. These are always folded into the coalescing key so requests with different (or absent)
+    /// validators are never collapsed into one another, while identical revalidations still coalesce.
+    /// </summary>
+    private static readonly string[] ConditionalHeaderNames =
+        ["If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"];
+
     public override string ToString()
     {
         return HeadersKey.Length == 0
@@ -19,22 +28,77 @@ internal readonly record struct RequestKey(string Method, string Url, string Hea
 
     /// <summary>
     /// Creates a key from the request, optionally including the values of specific header fields
-    /// in the key so requests with different header values are coalesced independently.
+    /// in the key so requests with different header values are coalesced independently. Any conditional
+    /// request headers present (<c>If-None-Match</c>, <c>If-Modified-Since</c>, etc.) are always folded in,
+    /// so a conditional revalidation is never coalesced with a non-conditional request for the same URL.
     /// </summary>
     /// <param name="request">The HTTP request to key.</param>
     /// <param name="keyHeaders">
-    /// Header field names to incorporate into the key. When <see langword="null"/> or empty the
-    /// key falls back to method + URL only.
+    /// Additional header field names to incorporate into the key. When <see langword="null"/> or empty and no
+    /// conditional headers are present, the key falls back to method + URL only.
     /// </param>
     public static RequestKey Create(HttpRequestMessage request, IReadOnlyList<string>? keyHeaders)
     {
-        if (keyHeaders is null || keyHeaders.Count == 0)
+        bool hasKeyHeaders = keyHeaders is not null && keyHeaders.Count > 0;
+        bool hasConditional = HasConditionalHeaders(request);
+
+        if (!hasKeyHeaders && !hasConditional)
         {
             return Create(request);
         }
 
-        string headersKey = BuildHeadersKey(request, keyHeaders);
+        IReadOnlyList<string> effectiveHeaders = hasConditional
+            ? MergeConditionalHeaders(keyHeaders, request)
+            : keyHeaders!;
+
+        string headersKey = BuildHeadersKey(request, effectiveHeaders);
         return new RequestKey(request.Method.Method, request.RequestUri!.AbsoluteUri, headersKey);
+    }
+
+    /// <summary>Returns <see langword="true"/> when the request carries any conditional header (RFC 9110 §13).</summary>
+    private static bool HasConditionalHeaders(HttpRequestMessage request)
+    {
+        foreach (string name in ConditionalHeaderNames)
+        {
+            if (request.Headers.Contains(name))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Returns the union of the configured <paramref name="keyHeaders"/> and any conditional headers present on
+    /// the request, de-duplicated case-insensitively.
+    /// </summary>
+    private static List<string> MergeConditionalHeaders(IReadOnlyList<string>? keyHeaders, HttpRequestMessage request)
+    {
+        List<string> merged = keyHeaders is null ? new(ConditionalHeaderNames.Length) : [.. keyHeaders];
+
+        foreach (string name in ConditionalHeaderNames)
+        {
+            if (request.Headers.Contains(name) && !ContainsIgnoreCase(merged, name))
+            {
+                merged.Add(name);
+            }
+        }
+
+        return merged;
+    }
+
+    private static bool ContainsIgnoreCase(List<string> names, string value)
+    {
+        foreach (string name in names)
+        {
+            if (string.Equals(name, value, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

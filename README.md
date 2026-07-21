@@ -245,6 +245,10 @@ MIT — see [LICENSE](LICENSE).
 
 ## Changelog
 
+### v2.2.0
+- **Vary: multiple representations are cached simultaneously (RFC 9111 §4.1).** Responses carrying a `Vary` header are now stored under a secondary cache key derived from the request's values for the Vary fields, with a small marker at the primary key recording which headers to vary on. Previously only one representation could be cached per URL — a `Vary: Accept-Encoding` resource requested by a gzip client and then an identity client kept overwriting the single entry, so content-negotiated endpoints never got variant cache hits. Works with both `MemoryCacheStore` and `DistributedCacheStore`; `Vary: *` remains uncacheable.
+- **Conditional requests are no longer coalesced with non-conditional ones.** The coalescing key now folds in any conditional request headers (`If-None-Match`, `If-Modified-Since`, `If-Match`, `If-Unmodified-Since`, `If-Range`). Previously a plain `GET` and an `If-None-Match` revalidation for the same URL could collapse into one execution, letting a caller that never sent a validator receive a bodyless `304`. Identical revalidations still coalesce, so a revalidation storm is still collapsed into a single origin call.
+
 ### v2.1.0
 - **`RevalidationGraceSeconds`** (default `300`) — entries carrying an `ETag` or `Last-Modified` validator are now retained in the cache store for a grace period beyond their freshness lifetime and stale windows. Previously a response with `max-age=N` and no stale windows was physically evicted exactly at expiry, so the conditional-revalidation path (`If-None-Match` / `If-Modified-Since` → `304`) could never fire with the default store — every expiry was a full refetch. Applies to both `MemoryCacheStore` and `DistributedCacheStore`; entries without a validator are unaffected. Set to `0` to restore the previous evict-at-expiry behavior. Like `MaxCacheSize`, this is a structural option read at registration time.
 
