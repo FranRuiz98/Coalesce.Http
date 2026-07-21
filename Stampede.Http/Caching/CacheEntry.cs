@@ -50,6 +50,15 @@ public sealed record CacheEntry
     public bool Immutable { get; init; }
 
     /// <summary>
+    /// When <see langword="true"/>, this entry is not a stored response but a <em>Vary marker</em> (RFC 9111 §4.1):
+    /// it lives at the primary cache key and records the <see cref="VaryFields"/> that a request must be keyed on,
+    /// pointing lookups to the correct secondary-key variant. Markers carry an empty <see cref="Body"/> and are
+    /// never served as a response; their expiry/validator metadata mirror the representation they point to purely
+    /// so their eviction deadline matches it.
+    /// </summary>
+    public bool IsVaryMarker { get; init; }
+
+    /// <summary>
     /// Determines whether the cache entry has expired based on its expiration time.
     /// </summary>
     /// <returns>Returns <see langword="true"/> if the cache entry has expired; otherwise, <see langword="false"/>.</returns>

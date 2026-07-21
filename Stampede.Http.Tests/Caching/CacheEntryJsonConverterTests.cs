@@ -39,7 +39,8 @@ public sealed class CacheEntryJsonConverterTests
             },
             StaleIfErrorSeconds = 300,
             StaleWhileRevalidateSeconds = 60,
-            MustRevalidate = true
+            MustRevalidate = true,
+            IsVaryMarker = true
         };
 
         string json = JsonSerializer.Serialize(original, CacheEntryJsonContext.Default.CacheEntry);
@@ -58,6 +59,7 @@ public sealed class CacheEntryJsonConverterTests
         restored.StaleIfErrorSeconds.Should().Be(original.StaleIfErrorSeconds);
         restored.StaleWhileRevalidateSeconds.Should().Be(original.StaleWhileRevalidateSeconds);
         restored.MustRevalidate.Should().Be(original.MustRevalidate);
+        restored.IsVaryMarker.Should().Be(original.IsVaryMarker);
     }
 
     // ── Optional fields default to null/default when absent ──────────────────

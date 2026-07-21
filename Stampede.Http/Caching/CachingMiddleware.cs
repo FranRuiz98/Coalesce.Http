@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 
 namespace Stampede.Http.Caching;
 
@@ -213,8 +214,121 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             Immutable = IsImmutableEntry(cc)
         };
 
-        await cache.SetAsync(key, entry, ct).ConfigureAwait(false);
+        await WriteEntryAsync(key, entry, ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Character separating the primary cache key from the Vary secondary key. U+001F (unit separator) is a
+    /// control character that cannot appear in a URI or header value, so it never collides with real key content.
+    /// </summary>
+    private const char VariantKeySeparator = (char)0x1f;
+
+    /// <summary>
+    /// Writes a representation to the store (RFC 9111 §4.1). When the response carries a <c>Vary</c> header,
+    /// the representation is stored under a secondary (variant) key derived from the request's values for the
+    /// Vary fields, and a small <see cref="CacheEntry.IsVaryMarker"/> entry is written at the primary key so
+    /// future lookups know which request headers to key on. Non-varying responses are stored at the primary key
+    /// directly. <c>Vary: *</c> stores only a marker (the response is never served from cache).
+    /// </summary>
+    private async ValueTask WriteEntryAsync(string primaryKey, CacheEntry entry, CancellationToken ct)
+    {
+        if (entry.VaryFields.Length == 0)
+        {
+            await cache.SetAsync(primaryKey, entry, ct).ConfigureAwait(false);
+            return;
+        }
+
+        if (IsVaryStar(entry))
+        {
+            await cache.SetAsync(primaryKey, CreateVaryMarker(entry), ct).ConfigureAwait(false);
+            return;
+        }
+
+        string variantKey = BuildVariantKey(primaryKey, entry.VaryFields,
+            field => entry.VaryValues.TryGetValue(field, out string[]? values) ? values : []);
+
+        await cache.SetAsync(variantKey, entry, ct).ConfigureAwait(false);
+        await cache.SetAsync(primaryKey, CreateVaryMarker(entry), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves the stored representation for <paramref name="request"/>, following a Vary marker
+    /// (RFC 9111 §4.1) at <paramref name="primaryKey"/> to the matching secondary-key variant when present.
+    /// Returns <see langword="null"/> on a miss or when the marker is <c>Vary: *</c>.
+    /// </summary>
+    private async ValueTask<CacheEntry?> ResolveEntryAsync(string primaryKey, HttpRequestMessage request, CancellationToken ct)
+    {
+        CacheEntry? entry = await cache.GetAsync(primaryKey, ct).ConfigureAwait(false);
+
+        if (entry is null || !entry.IsVaryMarker)
+        {
+            return entry;
+        }
+
+        // Vary: * — the resource is never served from cache (§4.1).
+        if (IsVaryStar(entry))
+        {
+            return null;
+        }
+
+        string variantKey = BuildVariantKey(primaryKey, entry.VaryFields,
+            field => request.Headers.TryGetValues(field, out IEnumerable<string>? values) ? [.. values] : []);
+
+        return await cache.GetAsync(variantKey, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Builds a Vary secondary cache key by appending the request's normalized values for each Vary field to the
+    /// primary key (RFC 9111 §4.1). Field names are sorted case-insensitively and values are lower-cased so the
+    /// key agrees with the case-insensitive comparison performed by <see cref="VaryMatches"/>.
+    /// </summary>
+    private static string BuildVariantKey(string primaryKey, string[] varyFields, Func<string, string[]> getValues)
+    {
+        string[] fields = [.. varyFields];
+        Array.Sort(fields, StringComparer.OrdinalIgnoreCase);
+
+        StringBuilder sb = new(primaryKey.Length + 32);
+        sb.Append(primaryKey);
+
+        foreach (string field in fields)
+        {
+            sb.Append(VariantKeySeparator).Append(field.ToLowerInvariant()).Append('=');
+
+            string[] values = getValues(field);
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
+                sb.Append(values[i].ToLowerInvariant());
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Creates a Vary marker for the given representation. The marker carries no body and mirrors the
+    /// representation's expiry/stale/validator metadata only so its eviction deadline matches the variant it
+    /// points to; it is never returned as a response.
+    /// </summary>
+    private static CacheEntry CreateVaryMarker(CacheEntry representation) => new()
+    {
+        StatusCode = representation.StatusCode,
+        Body = [],
+        Headers = new Dictionary<string, string[]>(),
+        ExpiresAt = representation.ExpiresAt,
+        StoredAt = representation.StoredAt,
+        ETag = representation.ETag,
+        LastModified = representation.LastModified,
+        VaryFields = representation.VaryFields,
+        VaryValues = new Dictionary<string, string[]>(),
+        StaleIfErrorSeconds = representation.StaleIfErrorSeconds,
+        StaleWhileRevalidateSeconds = representation.StaleWhileRevalidateSeconds,
+        IsVaryMarker = true
+    };
 
     private static string[] ExtractVaryFields(HttpResponseMessage response)
     {
@@ -368,7 +482,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         string key = keyBuilder.Build(request);
 
-        CacheEntry? entry = await cache.GetAsync(key, ct).ConfigureAwait(false);
+        // §4.1 — follow a Vary marker to the representation matching this request's Vary values.
+        CacheEntry? entry = await ResolveEntryAsync(key, request, ct).ConfigureAwait(false);
 
         // §4.1 — Vary: * means this response must never be served from cache
         if (entry is not null && IsVaryStar(entry))
@@ -487,7 +602,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // RFC 9110 §9.3.2 — use the GET cache key for HEAD requests
         string getKey = BuildGetKey(request.RequestUri);
 
-        CacheEntry? entry = await cache.GetAsync(getKey, ct).ConfigureAwait(false);
+        // §4.1 — follow a Vary marker to the representation matching this request's Vary values.
+        CacheEntry? entry = await ResolveEntryAsync(getKey, request, ct).ConfigureAwait(false);
 
         if (entry is not null && IsVaryStar(entry))
         {
@@ -539,7 +655,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                     StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(revalResponse, Options),
                     MustRevalidate = revalResponse.Headers.CacheControl?.MustRevalidate == true || revalResponse.Headers.CacheControl?.ProxyRevalidate == true
                 };
-                await cache.SetAsync(getKey, refreshed, ct).ConfigureAwait(false);
+                await WriteEntryAsync(getKey, refreshed, ct).ConfigureAwait(false);
                 metrics?.RecordCacheHit(HttpMethod.Head);
                 HttpResponseMessage headRefreshed = CreateResponse(refreshed);
                 headRefreshed.Content = new ByteArrayContent([]);
@@ -651,7 +767,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                 StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, Options),
                 MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
             };
-            await cache.SetAsync(key, refreshed, ct).ConfigureAwait(false);
+            await WriteEntryAsync(key, refreshed, ct).ConfigureAwait(false);
             metrics?.RecordCacheHit();
             return CreateResponse(refreshed);
         }
@@ -729,7 +845,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                             StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, Options),
                             MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
                         };
-                        await cache.SetAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
+                        await WriteEntryAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
                     }
                     else if (IsResponseCacheable(response))
                     {
