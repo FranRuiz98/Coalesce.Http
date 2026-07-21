@@ -217,7 +217,7 @@ public sealed class DistributedCacheStoreTests
         store.TryGetValue("expiring", out _).Should().BeTrue();
 
         // Wait for the backing MemoryDistributedCache to evict
-        await Task.Delay(200);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
 
         bool found = store.TryGetValue("expiring", out _);
         found.Should().BeFalse("the entry TTL has elapsed");
@@ -240,7 +240,7 @@ public sealed class DistributedCacheStoreTests
         store.Set("stale-key", entry);
 
         // Wait for ExpiresAt to pass
-        await Task.Delay(200);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
 
         // Entry should still be present because the backing store TTL includes the stale window
         bool found = store.TryGetValue("stale-key", out CacheEntry? restored);
@@ -261,7 +261,7 @@ public sealed class DistributedCacheStoreTests
 
         store.Set("swr-key", entry);
 
-        await Task.Delay(200);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
 
         bool found = store.TryGetValue("swr-key", out CacheEntry? restored);
         found.Should().BeTrue("the stale-while-revalidate window extends the backing store TTL beyond ExpiresAt");

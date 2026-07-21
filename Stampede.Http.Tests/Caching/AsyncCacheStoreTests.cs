@@ -49,7 +49,7 @@ public sealed class AsyncCacheStoreTests
     {
         DistributedCacheStore store = CreateDistributedStore();
 
-        CacheEntry? result = await store.GetAsync("no-such-key");
+        CacheEntry? result = await store.GetAsync("no-such-key", TestContext.Current.CancellationToken);
 
         result.Should().BeNull();
     }
@@ -60,8 +60,8 @@ public sealed class AsyncCacheStoreTests
         DistributedCacheStore store = CreateDistributedStore();
         CacheEntry entry = BuildEntry("async-body");
 
-        await store.SetAsync("key1", entry);
-        CacheEntry? retrieved = await store.GetAsync("key1");
+        await store.SetAsync("key1", entry, TestContext.Current.CancellationToken);
+        CacheEntry? retrieved = await store.GetAsync("key1", TestContext.Current.CancellationToken);
 
         retrieved.Should().NotBeNull();
         System.Text.Encoding.UTF8.GetString(retrieved!.Body).Should().Be("async-body");
@@ -74,9 +74,9 @@ public sealed class AsyncCacheStoreTests
         DistributedCacheStore store = CreateDistributedStore();
         CacheEntry entry = BuildEntry("to-remove");
 
-        await store.SetAsync("key2", entry);
-        await store.RemoveAsync("key2");
-        CacheEntry? afterRemove = await store.GetAsync("key2");
+        await store.SetAsync("key2", entry, TestContext.Current.CancellationToken);
+        await store.RemoveAsync("key2", TestContext.Current.CancellationToken);
+        CacheEntry? afterRemove = await store.GetAsync("key2", TestContext.Current.CancellationToken);
 
         afterRemove.Should().BeNull("RemoveAsync should delete the entry");
     }
@@ -87,7 +87,7 @@ public sealed class AsyncCacheStoreTests
         DistributedCacheStore store = CreateDistributedStore();
         CacheEntry entry = BuildEntry("sync-async-interop");
 
-        await store.SetAsync("key3", entry);
+        await store.SetAsync("key3", entry, TestContext.Current.CancellationToken);
         bool found = store.TryGetValue("key3", out CacheEntry? retrieved);
 
         found.Should().BeTrue();
@@ -101,7 +101,7 @@ public sealed class AsyncCacheStoreTests
         CacheEntry entry = BuildEntry("sync-then-async");
 
         store.Set("key4", entry);
-        CacheEntry? retrieved = await store.GetAsync("key4");
+        CacheEntry? retrieved = await store.GetAsync("key4", TestContext.Current.CancellationToken);
 
         retrieved.Should().NotBeNull();
         System.Text.Encoding.UTF8.GetString(retrieved!.Body).Should().Be("sync-then-async");
@@ -114,7 +114,7 @@ public sealed class AsyncCacheStoreTests
     {
         ICacheStore store = CreateMemoryStore();
 
-        CacheEntry? result = await store.GetAsync("no-such-key");
+        CacheEntry? result = await store.GetAsync("no-such-key", TestContext.Current.CancellationToken);
 
         result.Should().BeNull();
     }
@@ -125,8 +125,8 @@ public sealed class AsyncCacheStoreTests
         ICacheStore store = CreateMemoryStore();
         CacheEntry entry = BuildEntry("memory-async");
 
-        await store.SetAsync("m1", entry);
-        CacheEntry? retrieved = await store.GetAsync("m1");
+        await store.SetAsync("m1", entry, TestContext.Current.CancellationToken);
+        CacheEntry? retrieved = await store.GetAsync("m1", TestContext.Current.CancellationToken);
 
         retrieved.Should().NotBeNull();
         System.Text.Encoding.UTF8.GetString(retrieved!.Body).Should().Be("memory-async");
@@ -138,9 +138,9 @@ public sealed class AsyncCacheStoreTests
         ICacheStore store = CreateMemoryStore();
         CacheEntry entry = BuildEntry("to-remove");
 
-        await store.SetAsync("m2", entry);
-        await store.RemoveAsync("m2");
-        CacheEntry? afterRemove = await store.GetAsync("m2");
+        await store.SetAsync("m2", entry, TestContext.Current.CancellationToken);
+        await store.RemoveAsync("m2", TestContext.Current.CancellationToken);
+        CacheEntry? afterRemove = await store.GetAsync("m2", TestContext.Current.CancellationToken);
 
         afterRemove.Should().BeNull("RemoveAsync default impl should call Remove");
     }
@@ -151,7 +151,7 @@ public sealed class AsyncCacheStoreTests
         MemoryCacheStore store = CreateMemoryStore();
         CacheEntry entry = BuildEntry("interop");
 
-        await ((ICacheStore)store).SetAsync("m3", entry);
+        await ((ICacheStore)store).SetAsync("m3", entry, TestContext.Current.CancellationToken);
         bool found = store.TryGetValue("m3", out CacheEntry? retrieved);
 
         found.Should().BeTrue("SetAsync default should delegate to sync Set");

@@ -73,7 +73,7 @@ public sealed class HeadMethodCachingTests
 
         HttpResponseMessage headResponse = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Head, url), CancellationToken.None);
 
-        byte[] body = await headResponse.Content.ReadAsByteArrayAsync();
+        byte[] body = await headResponse.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken);
         body.Should().BeEmpty("HEAD responses must not include a body");
     }
 
@@ -151,7 +151,7 @@ public sealed class HeadMethodCachingTests
 
         headResponse.StatusCode.Should().Be(HttpStatusCode.OK,
             "304 during HEAD revalidation should result in 200 served from the refreshed cache entry");
-        byte[] body = await headResponse.Content.ReadAsByteArrayAsync();
+        byte[] body = await headResponse.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken);
         body.Should().BeEmpty("HEAD response body must be empty even after revalidation");
     }
 

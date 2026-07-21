@@ -30,7 +30,7 @@ public class HttpClientBuilderExtensionsTests
         var sp = services.BuildServiceProvider();
         var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("test");
 
-        var response = await client.GetAsync("https://api.test/resource");
+        var response = await client.GetAsync("https://api.test/resource", TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
         backendCalls.Should().Be(1);
@@ -83,9 +83,9 @@ public class HttpClientBuilderExtensionsTests
         var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("test");
 
         // First request populates the cache
-        _ = await client.GetAsync("https://api.test/resource");
+        _ = await client.GetAsync("https://api.test/resource", TestContext.Current.CancellationToken);
         // Second request must be served from cache — backend not called again
-        _ = await client.GetAsync("https://api.test/resource");
+        _ = await client.GetAsync("https://api.test/resource", TestContext.Current.CancellationToken);
 
         backendCallCount.Should().Be(1, "the second request must be served from CachingMiddleware without reaching the backend");
     }
@@ -115,11 +115,11 @@ public class HttpClientBuilderExtensionsTests
         var sp = services.BuildServiceProvider();
         var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("test");
 
-        var t1 = client.GetAsync("https://api.test/item");
-        var t2 = client.GetAsync("https://api.test/item");
-        var t3 = client.GetAsync("https://api.test/item");
+        var t1 = client.GetAsync("https://api.test/item", TestContext.Current.CancellationToken);
+        var t2 = client.GetAsync("https://api.test/item", TestContext.Current.CancellationToken);
+        var t3 = client.GetAsync("https://api.test/item", TestContext.Current.CancellationToken);
 
-        await Task.Delay(50); // allow all three to reach the coalescer
+        await Task.Delay(50, TestContext.Current.CancellationToken); // allow all three to reach the coalescer
         gate.SetResult(true);
 
         var responses = await Task.WhenAll(t1, t2, t3);
@@ -150,8 +150,8 @@ public class HttpClientBuilderExtensionsTests
 
         var factory = services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
 
-        _ = await factory.CreateClient("a").GetAsync("https://api.test/resource-a");
-        _ = await factory.CreateClient("b").GetAsync("https://api.test/resource-b");
+        _ = await factory.CreateClient("a").GetAsync("https://api.test/resource-a", TestContext.Current.CancellationToken);
+        _ = await factory.CreateClient("b").GetAsync("https://api.test/resource-b", TestContext.Current.CancellationToken);
 
         countA.Should().Be(1, "client a has its own isolated pipeline");
         countB.Should().Be(1, "client b has its own isolated pipeline");
@@ -179,7 +179,7 @@ public class HttpClientBuilderExtensionsTests
         var sp = services.BuildServiceProvider();
         var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("test");
 
-        var response = await client.GetAsync("https://api.test/resource");
+        var response = await client.GetAsync("https://api.test/resource", TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
     }
@@ -299,8 +299,8 @@ public class HttpClientBuilderExtensionsTests
             .GetRequiredService<IHttpClientFactory>()
             .CreateClient("test");
 
-        _ = await client.GetAsync("https://api.test/dist");
-        _ = await client.GetAsync("https://api.test/dist");
+        _ = await client.GetAsync("https://api.test/dist", TestContext.Current.CancellationToken);
+        _ = await client.GetAsync("https://api.test/dist", TestContext.Current.CancellationToken);
 
         backendCalls.Should().Be(1, "second request must be served from the distributed cache");
     }
@@ -341,19 +341,19 @@ public class HttpClientBuilderExtensionsTests
         var clientB = factory.CreateClient("b");
 
         // Populate cache for client A
-        _ = await clientA.GetAsync(sharedUrl);
+        _ = await clientA.GetAsync(sharedUrl, TestContext.Current.CancellationToken);
         backendCallsA.Should().Be(1);
 
         // Client A cache hit — no backend call
-        _ = await clientA.GetAsync(sharedUrl);
+        _ = await clientA.GetAsync(sharedUrl, TestContext.Current.CancellationToken);
         backendCallsA.Should().Be(1, "client A should serve from its own cache");
 
         // Client B must NOT hit client A's cache — must call its own backend
-        _ = await clientB.GetAsync(sharedUrl);
+        _ = await clientB.GetAsync(sharedUrl, TestContext.Current.CancellationToken);
         backendCallsB.Should().Be(1, "client B must use its own cache store, not client A's");
 
         // Client B cache hit — no backend call
-        _ = await clientB.GetAsync(sharedUrl);
+        _ = await clientB.GetAsync(sharedUrl, TestContext.Current.CancellationToken);
         backendCallsB.Should().Be(1, "client B should serve from its own cache");
     }
 

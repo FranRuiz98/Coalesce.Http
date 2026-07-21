@@ -40,7 +40,7 @@ public class RequestCoalescerPerformanceTests
         // Act - Lanzar 10,000 requests concurrentes
         for (int i = 0; i < concurrentCalls; i++)
         {
-            tasks.Add(coalescer.ExecuteAsync(key, Factory));
+            tasks.Add(coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken));
         }
 
         // Completar la request original
@@ -107,7 +107,7 @@ public class RequestCoalescerPerformanceTests
                     {
                         Content = new StringContent($"Response for {url}")
                     };
-                }));
+                }, TestContext.Current.CancellationToken));
             }
         }
 
@@ -156,7 +156,7 @@ public class RequestCoalescerPerformanceTests
 
             for (int i = 0; i < callsPerIteration; i++)
             {
-                tasks.Add(coalescer.ExecuteAsync(key, Factory));
+                tasks.Add(coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken));
             }
 
             tcs.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
@@ -206,7 +206,7 @@ public class RequestCoalescerPerformanceTests
                 {
                     Content = new StringContent("Test")
                 });
-            });
+            }, TestContext.Current.CancellationToken);
         }
 
         sw.Stop();
@@ -248,7 +248,7 @@ public class RequestCoalescerPerformanceTests
             // Lanzar burst de requests concurrentes
             for (int i = 0; i < concurrentPerRound; i++)
             {
-                tasks.Add(coalescer.ExecuteAsync(key, Factory));
+                tasks.Add(coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken));
             }
 
             // Completar

@@ -29,9 +29,9 @@ public class ResponseCloningTests
         }
 
         // Act - Iniciar múltiples llamadas concurrentes
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
-        var task3 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task3 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         // Completar la request original
         var originalResponse = new HttpResponseMessage(HttpStatusCode.OK)
@@ -45,9 +45,9 @@ public class ResponseCloningTests
         var response3 = await task3;
 
         // Leer el contenido de cada respuesta independientemente
-        var content1 = await response1.Content.ReadAsStringAsync();
-        var content2 = await response2.Content.ReadAsStringAsync();
-        var content3 = await response3.Content.ReadAsStringAsync();
+        var content1 = await response1.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        var content2 = await response2.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        var content3 = await response3.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
         // Assert - Cada caller debe poder leer el contenido completo
         content1.Should().Be(expectedContent);
@@ -79,9 +79,9 @@ public class ResponseCloningTests
         }
 
         // Act
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
-        var task3 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task3 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         var originalResponse = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -94,15 +94,15 @@ public class ResponseCloningTests
         var response3 = await task3;
 
         // Leer contenido de response1
-        var content1 = await response1.Content.ReadAsStringAsync();
+        var content1 = await response1.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         content1.Should().Be(expectedContent);
 
         // Dispose de response1
         response1.Dispose();
 
         // Assert - Las otras respuestas deben seguir funcionando
-        var content2 = await response2.Content.ReadAsStringAsync();
-        var content3 = await response3.Content.ReadAsStringAsync();
+        var content2 = await response2.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        var content3 = await response3.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
         content2.Should().Be(expectedContent);
         content3.Should().Be(expectedContent);
@@ -132,9 +132,9 @@ public class ResponseCloningTests
         }
 
         // Act
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
-        var task3 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task3 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         var originalResponse = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -147,9 +147,9 @@ public class ResponseCloningTests
         var response3 = await task3;
 
         // Leer y deserializar desde cada respuesta
-        var user1 = await response1.Content.ReadFromJsonAsync<User>();
-        var user2 = await response2.Content.ReadFromJsonAsync<User>();
-        var user3 = await response3.Content.ReadFromJsonAsync<User>();
+        var user1 = await response1.Content.ReadFromJsonAsync<User>(TestContext.Current.CancellationToken);
+        var user2 = await response2.Content.ReadFromJsonAsync<User>(TestContext.Current.CancellationToken);
+        var user3 = await response3.Content.ReadFromJsonAsync<User>(TestContext.Current.CancellationToken);
 
         // Assert
         user1.Should().BeEquivalentTo(expectedUser);
@@ -181,8 +181,8 @@ public class ResponseCloningTests
         }
 
         // Act
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         var originalResponse = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -194,11 +194,11 @@ public class ResponseCloningTests
         var response2 = await task2;
 
         // Leer el contenido múltiples veces desde la misma respuesta (esto fallaría con un stream compartido)
-        var content1a = await response1.Content.ReadAsStringAsync();
-        var content1b = await response1.Content.ReadAsStringAsync();
+        var content1a = await response1.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        var content1b = await response1.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         
-        var content2a = await response2.Content.ReadAsStringAsync();
-        var content2b = await response2.Content.ReadAsStringAsync();
+        var content2a = await response2.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        var content2b = await response2.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
         // Assert - Cada lectura debe devolver el contenido completo
         content1a.Should().Be(expectedContent);
@@ -230,8 +230,8 @@ public class ResponseCloningTests
         }
 
         // Act
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         var originalResponse = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -279,8 +279,8 @@ public class ResponseCloningTests
         }
 
         // Act
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         var originalResponse = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -293,8 +293,8 @@ public class ResponseCloningTests
         var response2 = await task2;
 
         // Leer contenido binario de cada respuesta
-        var bytes1 = await response1.Content.ReadAsByteArrayAsync();
-        var bytes2 = await response2.Content.ReadAsByteArrayAsync();
+        var bytes1 = await response1.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken);
+        var bytes2 = await response2.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken);
 
         // Assert
         bytes1.Should().Equal(expectedBytes);
@@ -325,8 +325,8 @@ public class ResponseCloningTests
         }
 
         // Act
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         var originalResponse = new HttpResponseMessage(HttpStatusCode.NoContent)
         {

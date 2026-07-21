@@ -60,7 +60,7 @@ public sealed class CacheRequestPolicyTests
         HttpResponseMessage res2 = await invoker.SendAsync(req2, CancellationToken.None);
 
         callCount.Should().Be(2, "both requests should reach the server");
-        string body2 = await res2.Content.ReadAsStringAsync();
+        string body2 = await res2.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body2.Should().Be("response-2", "cache was not populated by the bypassed request");
     }
 
@@ -90,7 +90,7 @@ public sealed class CacheRequestPolicyTests
         // GET should still be served from cache
         HttpResponseMessage res = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/bypass-inv"), CancellationToken.None);
 
-        string body = await res.Content.ReadAsStringAsync();
+        string body = await res.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("body-1", "bypassed DELETE should not have invalidated the cached GET entry");
     }
 
@@ -185,7 +185,7 @@ public sealed class CacheRequestPolicyTests
         HttpResponseMessage res = await invoker.SendAsync(req2, CancellationToken.None);
 
         callCount.Should().Be(2, "ForceRevalidate without validators should fall through to full request");
-        string body = await res.Content.ReadAsStringAsync();
+        string body = await res.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("v2");
     }
 
@@ -215,7 +215,7 @@ public sealed class CacheRequestPolicyTests
         HttpResponseMessage res = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/nostore"), CancellationToken.None);
 
         callCount.Should().Be(2, "second request should reach the server because first was not stored");
-        string body = await res.Content.ReadAsStringAsync();
+        string body = await res.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("r2");
     }
 
@@ -243,7 +243,7 @@ public sealed class CacheRequestPolicyTests
         HttpResponseMessage res = await invoker.SendAsync(req2, CancellationToken.None);
 
         callCount.Should().Be(1, "NoStore should not prevent cache reads");
-        string body = await res.Content.ReadAsStringAsync();
+        string body = await res.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("cached-body");
     }
 
@@ -321,7 +321,7 @@ public sealed class CacheRequestPolicyTests
         req2.Options.Set(CacheRequestPolicy.NoStore, true);
         HttpResponseMessage res = await invoker.SendAsync(req2, CancellationToken.None);
 
-        string body = await res.Content.ReadAsStringAsync();
+        string body = await res.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("updated", "new response is returned directly");
 
         // Third request — should hit the server since the new response was not stored

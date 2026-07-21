@@ -67,13 +67,13 @@ public sealed class StaleWhileRevalidateTests
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/swr"), CancellationToken.None);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, "stale-while-revalidate should serve the cached entry immediately");
-        string returned = await response.Content.ReadAsStringAsync();
+        string returned = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         returned.Should().Be(body, "the stale body should be served while background revalidation happens");
 
         // Release the gate so background revalidation can complete
         gate.SetResult(true);
         // Allow background task to finish
-        await Task.Delay(100);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
     }
 
     // ── background revalidation updates the cache ────────────────────────────
@@ -111,11 +111,11 @@ public sealed class StaleWhileRevalidateTests
         _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/swr-update"), CancellationToken.None);
 
         // Wait for background revalidation to complete
-        await Task.Delay(200);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
 
         // Third request should get updated content from cache
         HttpResponseMessage third = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/swr-update"), CancellationToken.None);
-        string thirdBody = await third.Content.ReadAsStringAsync();
+        string thirdBody = await third.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         thirdBody.Should().Be(updatedBody, "background revalidation should have updated the cache");
     }
 
@@ -155,7 +155,7 @@ public sealed class StaleWhileRevalidateTests
         _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/swr-304"), CancellationToken.None);
 
         // Wait for background revalidation
-        await Task.Delay(200);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
 
         // The refreshed entry should now be fresh
         string key = _keyBuilder.Build(new HttpRequestMessage(HttpMethod.Get, "https://api.test/swr-304"));
@@ -267,13 +267,13 @@ public sealed class StaleWhileRevalidateTests
         _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/default-swr"), CancellationToken.None);
 
         // Wait for entry to become stale
-        await Task.Delay(10);
+        await Task.Delay(10, TestContext.Current.CancellationToken);
 
         // Should serve stale via default SWR window
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/default-swr"), CancellationToken.None);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        string returned = await response.Content.ReadAsStringAsync();
+        string returned = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         returned.Should().Be(body, "DefaultStaleWhileRevalidateSeconds should allow serving the stale entry immediately");
     }
 

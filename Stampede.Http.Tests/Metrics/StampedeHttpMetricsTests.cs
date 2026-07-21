@@ -214,9 +214,9 @@ public sealed class StampedeHttpMetricsTests : IDisposable
 
         TaskCompletionSource<HttpResponseMessage> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Task<HttpResponseMessage> t1 = coalescer.ExecuteAsync(key, () => tcs.Task);
-        Task<HttpResponseMessage> t2 = coalescer.ExecuteAsync(key, () => tcs.Task);
-        Task<HttpResponseMessage> t3 = coalescer.ExecuteAsync(key, () => tcs.Task);
+        Task<HttpResponseMessage> t1 = coalescer.ExecuteAsync(key, () => tcs.Task, TestContext.Current.CancellationToken);
+        Task<HttpResponseMessage> t2 = coalescer.ExecuteAsync(key, () => tcs.Task, TestContext.Current.CancellationToken);
+        Task<HttpResponseMessage> t3 = coalescer.ExecuteAsync(key, () => tcs.Task, TestContext.Current.CancellationToken);
 
         tcs.SetResult(new HttpResponseMessage(HttpStatusCode.OK));
 
@@ -236,7 +236,7 @@ public sealed class StampedeHttpMetricsTests : IDisposable
         RequestKey key = new("GET", "https://api.test/inflight");
 
         TaskCompletionSource<HttpResponseMessage> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        Task<HttpResponseMessage> t1 = coalescer.ExecuteAsync(key, () => tcs.Task);
+        Task<HttpResponseMessage> t1 = coalescer.ExecuteAsync(key, () => tcs.Task, TestContext.Current.CancellationToken);
 
         tcs.SetResult(new HttpResponseMessage(HttpStatusCode.OK));
         _ = await t1;
@@ -259,17 +259,17 @@ public sealed class StampedeHttpMetricsTests : IDisposable
         TaskCompletionSource<HttpResponseMessage> gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Start the winner
-        Task<HttpResponseMessage> winner = coalescer.ExecuteAsync(key, () => gate.Task);
+        Task<HttpResponseMessage> winner = coalescer.ExecuteAsync(key, () => gate.Task, TestContext.Current.CancellationToken);
 
         // Give the winner time to register as inflight
-        await Task.Delay(10);
+        await Task.Delay(10, TestContext.Current.CancellationToken);
 
         // Start a waiter — it will time out and fall back to independent execution
         Task<HttpResponseMessage> waiter = coalescer.ExecuteAsync(key, () =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new ByteArrayContent([])
-            }));
+            }), TestContext.Current.CancellationToken);
 
         using HttpResponseMessage waiterResponse = await waiter;
 

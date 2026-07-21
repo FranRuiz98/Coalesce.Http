@@ -107,7 +107,7 @@ public sealed class CachingMiddlewareTests
 
         callCount.Should().Be(2, "should have sent a conditional request");
         revalidated.StatusCode.Should().Be(HttpStatusCode.OK);
-        string responseBody = await revalidated.Content.ReadAsStringAsync();
+        string responseBody = await revalidated.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         responseBody.Should().Be(body, "cached body should be reused on 304");
     }
 
@@ -167,7 +167,7 @@ public sealed class CachingMiddlewareTests
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/updated"), CancellationToken.None);
 
         callCount.Should().Be(2);
-        string body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be(newBody);
     }
 

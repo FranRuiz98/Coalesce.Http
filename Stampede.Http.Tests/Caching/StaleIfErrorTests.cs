@@ -70,7 +70,7 @@ public sealed class StaleIfErrorTests
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/sie"), CancellationToken.None);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, "stale-if-error should serve the cached body on 5xx");
-        string returned = await response.Content.ReadAsStringAsync();
+        string returned = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         returned.Should().Be(body);
     }
 
@@ -101,7 +101,7 @@ public sealed class StaleIfErrorTests
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/sie-exception"), CancellationToken.None);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, "stale-if-error should catch network exceptions");
-        string returned = await response.Content.ReadAsStringAsync();
+        string returned = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         returned.Should().Be(body);
     }
 
@@ -217,7 +217,7 @@ public sealed class StaleIfErrorTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK,
             "stale-if-error must rescue a 5xx received during conditional revalidation");
-        string returned = await response.Content.ReadAsStringAsync();
+        string returned = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         returned.Should().Be(body);
     }
 
@@ -249,13 +249,13 @@ public sealed class StaleIfErrorTests
         _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/default-sie"), CancellationToken.None);
 
         // Wait for the entry to become stale
-        await Task.Delay(10);
+        await Task.Delay(10, TestContext.Current.CancellationToken);
 
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/default-sie"), CancellationToken.None);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK,
             "DefaultStaleIfErrorSeconds must apply when the response carries no stale-if-error directive");
-        string returned = await response.Content.ReadAsStringAsync();
+        string returned = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         returned.Should().Be(body);
     }
 

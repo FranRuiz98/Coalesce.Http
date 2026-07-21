@@ -21,7 +21,7 @@ public class RequestCoalescerTests
         }
 
         // Act
-        var response = await coalescer.ExecuteAsync(key, Factory);
+        var response = await coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         // Assert
         executionCount.Should().Be(1);
@@ -44,9 +44,9 @@ public class RequestCoalescerTests
         }
 
         // Act
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
-        var task3 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task3 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         tcs.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
 
@@ -81,8 +81,8 @@ public class RequestCoalescerTests
         }
 
         // Act
-        var response1 = await coalescer.ExecuteAsync(key1, Factory);
-        var response2 = await coalescer.ExecuteAsync(key2, Factory);
+        var response1 = await coalescer.ExecuteAsync(key1, Factory, TestContext.Current.CancellationToken);
+        var response2 = await coalescer.ExecuteAsync(key2, Factory, TestContext.Current.CancellationToken);
 
         // Assert
         executionCount.Should().Be(2);
@@ -104,8 +104,8 @@ public class RequestCoalescerTests
         }
 
         // Act
-        await coalescer.ExecuteAsync(key, Factory);
-        await coalescer.ExecuteAsync(key, Factory);
+        await coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        await coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         // Assert
         executionCount.Should().Be(2, "el request key debería limpiarse después de la primera ejecución");
@@ -148,9 +148,9 @@ public class RequestCoalescerTests
         }
 
         // Act
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
-        var task3 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task3 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         tcs.SetException(new InvalidOperationException("Test exception"));
 
@@ -184,14 +184,14 @@ public class RequestCoalescerTests
         // Act
         try
         {
-            await coalescer.ExecuteAsync(key, FailingFactory);
+            await coalescer.ExecuteAsync(key, FailingFactory, TestContext.Current.CancellationToken);
         }
         catch
         {
             // Expected
         }
 
-        var response = await coalescer.ExecuteAsync(key, SuccessFactory);
+        var response = await coalescer.ExecuteAsync(key, SuccessFactory, TestContext.Current.CancellationToken);
 
         // Assert
         executionCount.Should().Be(2);
@@ -214,8 +214,8 @@ public class RequestCoalescerTests
         }
 
         // Act
-        var response1 = await coalescer.ExecuteAsync(getKey, Factory);
-        var response2 = await coalescer.ExecuteAsync(postKey, Factory);
+        var response1 = await coalescer.ExecuteAsync(getKey, Factory, TestContext.Current.CancellationToken);
+        var response2 = await coalescer.ExecuteAsync(postKey, Factory, TestContext.Current.CancellationToken);
 
         // Assert
         executionCount.Should().Be(2);
@@ -243,7 +243,7 @@ public class RequestCoalescerTests
 
         for (int i = 0; i < concurrentCalls; i++)
         {
-            tasks.Add(coalescer.ExecuteAsync(key, Factory));
+            tasks.Add(coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken));
         }
 
         tcs.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
@@ -272,8 +272,8 @@ public class RequestCoalescerTests
 
         // Act
         var cts = new CancellationTokenSource();
-        var task1 = coalescer.ExecuteAsync(key, Factory);
-        var task2 = coalescer.ExecuteAsync(key, Factory);
+        var task1 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
+        var task2 = coalescer.ExecuteAsync(key, Factory, TestContext.Current.CancellationToken);
 
         cts.Cancel();
         tcs.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
@@ -316,7 +316,7 @@ public class RequestCoalescerTests
         // Assert — the waiter must succeed even though the winner's token was cancelled
         var waiterResponse = await waiterTask;
         waiterResponse.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
-        string body = await waiterResponse.Content.ReadAsStringAsync();
+        string body = await waiterResponse.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("payload");
 
         // The winner itself may throw OperationCanceledException or succeed depending on timing,
@@ -358,8 +358,8 @@ public class RequestCoalescerTests
         var gate = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Launch winner + waiter
-        var t1 = coalescer.ExecuteAsync(key, () => gate.Task);
-        var t2 = coalescer.ExecuteAsync(key, () => gate.Task);
+        var t1 = coalescer.ExecuteAsync(key, () => gate.Task, TestContext.Current.CancellationToken);
+        var t2 = coalescer.ExecuteAsync(key, () => gate.Task, TestContext.Current.CancellationToken);
 
         gate.SetResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
         {

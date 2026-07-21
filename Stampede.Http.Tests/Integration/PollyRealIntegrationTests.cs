@@ -63,11 +63,11 @@ public class PollyRealIntegrationTests
             .GetRequiredService<IHttpClientFactory>()
             .CreateClient("polly-real-rule1");
 
-        Task<HttpResponseMessage> t1 = client.GetAsync("https://api.test/r1");
-        Task<HttpResponseMessage> t2 = client.GetAsync("https://api.test/r1");
-        Task<HttpResponseMessage> t3 = client.GetAsync("https://api.test/r1");
+        Task<HttpResponseMessage> t1 = client.GetAsync("https://api.test/r1", TestContext.Current.CancellationToken);
+        Task<HttpResponseMessage> t2 = client.GetAsync("https://api.test/r1", TestContext.Current.CancellationToken);
+        Task<HttpResponseMessage> t3 = client.GetAsync("https://api.test/r1", TestContext.Current.CancellationToken);
 
-        await Task.Delay(50); // let all three queue up at CoalescingHandler
+        await Task.Delay(50, TestContext.Current.CancellationToken); // let all three queue up at CoalescingHandler
         gate.SetResult(true); // winner gets 503 → Polly retries → 200
 
         HttpResponseMessage[] responses = await Task.WhenAll(t1, t2, t3);
@@ -136,14 +136,14 @@ public class PollyRealIntegrationTests
             .CreateClient("polly-real-rule2");
 
         // First request: cache miss → 200 + ETag stored (becomes stale within 1ms).
-        _ = await client.GetAsync("https://api.test/item");
+        _ = await client.GetAsync("https://api.test/item", TestContext.Current.CancellationToken);
 
         // Wait for the entry to become stale
-        await Task.Delay(10);
+        await Task.Delay(10, TestContext.Current.CancellationToken);
 
         // Second request: stale entry → CachingMiddleware.RevalidateAsync injects If-None-Match
         // → Polly fires attempt 1 (503) then retries (304 → refreshed cache).
-        _ = await client.GetAsync("https://api.test/item");
+        _ = await client.GetAsync("https://api.test/item", TestContext.Current.CancellationToken);
 
         _ = revalidationEtags.Should().NotBeEmpty("revalidation must have been triggered");
         _ = revalidationEtags.Should().AllBe(expectedETag,
@@ -205,7 +205,7 @@ public class PollyRealIntegrationTests
             .GetRequiredService<IHttpClientFactory>()
             .CreateClient("polly-real-rule3");
 
-        var response = await client.GetAsync("https://api.test/hedged");
+        var response = await client.GetAsync("https://api.test/hedged", TestContext.Current.CancellationToken);
 
         _ = capturedRequests.Should().HaveCount(2,
             "Polly hedging (MaxHedgedAttempts = 1) must fire 2 concurrent transport calls (Rule 3)");
@@ -249,8 +249,8 @@ public class PollyRealIntegrationTests
             .GetRequiredService<IHttpClientFactory>()
             .CreateClient("polly-real-cache");
 
-        _ = await client.GetAsync("https://api.test/res"); // cache miss → transport
-        _ = await client.GetAsync("https://api.test/res"); // cache hit  → served from cache
+        _ = await client.GetAsync("https://api.test/res", TestContext.Current.CancellationToken); // cache miss → transport
+        _ = await client.GetAsync("https://api.test/res", TestContext.Current.CancellationToken); // cache hit  → served from cache
 
         _ = backendCalls.Should().Be(1,
             "the second request is a fresh cache hit; it must not reach Polly or the transport");

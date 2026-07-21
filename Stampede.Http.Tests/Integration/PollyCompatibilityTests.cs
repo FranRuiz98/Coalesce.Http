@@ -36,11 +36,11 @@ public class PollyCompatibilityTests
             .CreateClient("rule1");
 
         // Start three concurrent callers for the same URL before the transport responds
-        var t1 = client.GetAsync("https://api.test/data");
-        var t2 = client.GetAsync("https://api.test/data");
-        var t3 = client.GetAsync("https://api.test/data");
+        var t1 = client.GetAsync("https://api.test/data", TestContext.Current.CancellationToken);
+        var t2 = client.GetAsync("https://api.test/data", TestContext.Current.CancellationToken);
+        var t3 = client.GetAsync("https://api.test/data", TestContext.Current.CancellationToken);
 
-        await Task.Delay(50); // let all three reach the coalescer
+        await Task.Delay(50, TestContext.Current.CancellationToken); // let all three reach the coalescer
         gate.SetResult(true);
 
         var responses = await Task.WhenAll(t1, t2, t3);
@@ -110,14 +110,14 @@ public class PollyCompatibilityTests
             .CreateClient("rule2");
 
         // First request: cache miss → 200 with ETag stored (becomes stale within 1ms).
-        _ = await client.GetAsync("https://api.test/item");
+        _ = await client.GetAsync("https://api.test/item", TestContext.Current.CancellationToken);
 
         // Wait for the entry to become stale
-        await Task.Delay(10);
+        await Task.Delay(10, TestContext.Current.CancellationToken);
 
         // Second request: stale entry → CachingMiddleware.RevalidateAsync injects
         // If-None-Match → RetryOnceHandler fires attempt 1 (503) then retries (304 → refreshed cache).
-        _ = await client.GetAsync("https://api.test/item");
+        _ = await client.GetAsync("https://api.test/item", TestContext.Current.CancellationToken);
 
         _ = revalidationEtags.Should().NotBeEmpty("revalidation must have been triggered");
         _ = revalidationEtags.Should().AllBe(expectedETag,
@@ -158,7 +158,7 @@ public class PollyCompatibilityTests
             .GetRequiredService<IHttpClientFactory>()
             .CreateClient("rule3");
 
-        _ = await client.GetAsync("https://api.test/hedged");
+        _ = await client.GetAsync("https://api.test/hedged", TestContext.Current.CancellationToken);
 
         _ = capturedInstances.Should().HaveCount(2, "hedging issued two concurrent attempts");
         _ = capturedInstances.Distinct().Should().HaveCount(2,
@@ -197,7 +197,7 @@ public class PollyCompatibilityTests
             .GetRequiredService<IHttpClientFactory>()
             .CreateClient("rule3b");
 
-        _ = await client.GetAsync("https://api.test/hedged-headers");
+        _ = await client.GetAsync("https://api.test/hedged-headers", TestContext.Current.CancellationToken);
 
         _ = capturedMarkers.Should().HaveCount(2);
         _ = capturedMarkers.Distinct().Should().HaveCount(2,

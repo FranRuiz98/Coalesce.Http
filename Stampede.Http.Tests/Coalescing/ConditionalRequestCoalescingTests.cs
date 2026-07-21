@@ -95,15 +95,16 @@ public sealed class ConditionalRequestCoalescingTests
         Task<HttpResponseMessage> conditionalTask = invoker.SendAsync(conditional, CancellationToken.None);
         Task<HttpResponseMessage> plainTask = invoker.SendAsync(plain, CancellationToken.None);
 
-        await Task.WhenAll(conditionalTask, plainTask);
+        HttpResponseMessage conditionalResponse = await conditionalTask;
+        HttpResponseMessage plainResponse = await plainTask;
 
         stub.CallCount.Should().Be(2,
             "a conditional and a non-conditional request for the same URL must execute independently");
-        conditionalTask.Result.StatusCode.Should().Be(HttpStatusCode.NotModified,
+        conditionalResponse.StatusCode.Should().Be(HttpStatusCode.NotModified,
             "the conditional caller must receive the 304 produced for its validator");
-        plainTask.Result.StatusCode.Should().Be(HttpStatusCode.OK,
+        plainResponse.StatusCode.Should().Be(HttpStatusCode.OK,
             "the non-conditional caller must never receive a 304 it did not ask for");
-        (await plainTask.Result.Content.ReadAsStringAsync()).Should().Be("full-body");
+        (await plainResponse.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).Should().Be("full-body");
     }
 
     [Fact]
