@@ -137,7 +137,7 @@ public sealed class TimeProviderCachingTests
             "stale-while-revalidate should serve the cached response immediately without blocking");
 
         // Give the background task time to complete
-        await Task.Delay(200);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
         callCount.Should().BeGreaterThanOrEqualTo(2, "background revalidation should have fired");
     }
 
@@ -203,7 +203,7 @@ public sealed class TimeProviderCachingTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK,
             "stale-if-error must serve the cached response when the origin returns 5xx within the window");
-        string returned = await response.Content.ReadAsStringAsync();
+        string returned = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         returned.Should().Be(body);
     }
 

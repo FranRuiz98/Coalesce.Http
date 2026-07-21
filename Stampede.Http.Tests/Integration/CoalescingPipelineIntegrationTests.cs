@@ -14,9 +14,9 @@ public class CoalescingPipelineIntegrationTests
         var client = CreateClient(transport);
 
         // Act
-        var request1 = client.GetAsync("https://api.example.com/products/42");
-        var request2 = client.GetAsync("https://api.example.com/products/42");
-        var request3 = client.GetAsync("https://api.example.com/products/42");
+        var request1 = client.GetAsync("https://api.example.com/products/42", TestContext.Current.CancellationToken);
+        var request2 = client.GetAsync("https://api.example.com/products/42", TestContext.Current.CancellationToken);
+        var request3 = client.GetAsync("https://api.example.com/products/42", TestContext.Current.CancellationToken);
 
         await transport.WaitForFirstCallAsync();
         transport.Release();
@@ -36,9 +36,9 @@ public class CoalescingPipelineIntegrationTests
         var client = CreateClient(transport);
 
         // Act
-        var request1 = client.PostAsync("https://api.example.com/orders", new StringContent("{}"));
-        var request2 = client.PostAsync("https://api.example.com/orders", new StringContent("{}"));
-        var request3 = client.PostAsync("https://api.example.com/orders", new StringContent("{}"));
+        var request1 = client.PostAsync("https://api.example.com/orders", new StringContent("{}"), TestContext.Current.CancellationToken);
+        var request2 = client.PostAsync("https://api.example.com/orders", new StringContent("{}"), TestContext.Current.CancellationToken);
+        var request3 = client.PostAsync("https://api.example.com/orders", new StringContent("{}"), TestContext.Current.CancellationToken);
 
         await transport.WaitForCallCountAsync(3);
         transport.Release();
@@ -58,8 +58,8 @@ public class CoalescingPipelineIntegrationTests
         var client = CreateClient(transport);
 
         // Act
-        var first = await client.GetAsync("https://api.example.com/catalog");
-        var second = await client.GetAsync("https://api.example.com/catalog");
+        var first = await client.GetAsync("https://api.example.com/catalog", TestContext.Current.CancellationToken);
+        var second = await client.GetAsync("https://api.example.com/catalog", TestContext.Current.CancellationToken);
 
         // Assert
         first.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);

@@ -73,7 +73,7 @@ public sealed class CacheInvalidationTests
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/invalidate"), CancellationToken.None);
         callCount.Should().Be(2, "after invalidation, the middleware must fetch from origin");
 
-        string body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("response-2");
     }
 

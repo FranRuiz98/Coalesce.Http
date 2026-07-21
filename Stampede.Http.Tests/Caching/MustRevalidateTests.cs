@@ -139,7 +139,7 @@ public sealed class MustRevalidateTests
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/mr-swr"), CancellationToken.None);
 
         callCount.Should().Be(2, "must-revalidate must force a full request instead of serving stale via SWR");
-        string body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("fresh", "the fresh response from the origin should be returned, not the stale cache");
     }
 
@@ -208,7 +208,7 @@ public sealed class MustRevalidateTests
         HttpResponseMessage response = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/pr-swr"), CancellationToken.None);
 
         callCount.Should().Be(2, "proxy-revalidate must force a synchronous request instead of serving stale via SWR");
-        string body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         body.Should().Be("fresh");
     }
 
