@@ -268,6 +268,48 @@ public sealed class DistributedCacheStoreTests
         restored.Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task Set_WithValidator_DefaultGrace_EntrySurvivesBeyondExpiresAt()
+    {
+        // Entry expires in 50 ms, has no stale windows but carries an ETag.
+        // RevalidationGraceSeconds must extend the backing store TTL so a conditional
+        // If-None-Match revalidation is still possible after ExpiresAt elapses.
+        IDistributedCache cache = new MemoryDistributedCache(
+            Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions()));
+        DistributedCacheStore store = new(cache);
+
+        CacheEntry entry = BuildEntry(
+            expiresAt: DateTimeOffset.UtcNow.AddMilliseconds(50),
+            eTag: "\"v1\"");
+
+        store.Set("grace-key", entry);
+
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+
+        bool found = store.TryGetValue("grace-key", out CacheEntry? restored);
+        found.Should().BeTrue("the revalidation grace period extends the backing store TTL for entries with a validator");
+        restored!.ETag.Should().Be("\"v1\"");
+    }
+
+    [Fact]
+    public async Task Set_WithValidator_ZeroGrace_EntryEvictedAtExpiresAt()
+    {
+        IDistributedCache cache = new MemoryDistributedCache(
+            Microsoft.Extensions.Options.Options.Create(new MemoryDistributedCacheOptions()));
+        DistributedCacheStore store = new(cache, new CacheOptions { RevalidationGraceSeconds = 0 });
+
+        CacheEntry entry = BuildEntry(
+            expiresAt: DateTimeOffset.UtcNow.AddMilliseconds(50),
+            eTag: "\"v1\"");
+
+        store.Set("zero-grace-key", entry);
+
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+
+        bool found = store.TryGetValue("zero-grace-key", out _);
+        found.Should().BeFalse("RevalidationGraceSeconds = 0 restores eviction exactly at ExpiresAt");
+    }
+
     // ── Isolation ────────────────────────────────────────────────────────────
 
     [Fact]

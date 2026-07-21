@@ -12,13 +12,15 @@ namespace Stampede.Http.Tests.Caching;
 /// </summary>
 public sealed class MemoryCacheStoreExpirationTests
 {
-    private static MemoryCacheStore CreateStore() =>
-        new(new MemoryCache(new MemoryCacheOptions()));
+    private static MemoryCacheStore CreateStore(CacheOptions? options = null) =>
+        new(new MemoryCache(new MemoryCacheOptions()), options ?? new CacheOptions());
 
     private static CacheEntry BuildEntry(
         DateTimeOffset expiresAt,
         long staleIfErrorSeconds = 0,
-        long staleWhileRevalidateSeconds = 0)
+        long staleWhileRevalidateSeconds = 0,
+        string? eTag = null,
+        DateTimeOffset? lastModified = null)
     {
         return new CacheEntry
         {
@@ -28,7 +30,9 @@ public sealed class MemoryCacheStoreExpirationTests
             ExpiresAt = expiresAt,
             StoredAt = DateTimeOffset.UtcNow,
             StaleIfErrorSeconds = staleIfErrorSeconds,
-            StaleWhileRevalidateSeconds = staleWhileRevalidateSeconds
+            StaleWhileRevalidateSeconds = staleWhileRevalidateSeconds,
+            ETag = eTag,
+            LastModified = lastModified
         };
     }
 
@@ -109,6 +113,74 @@ public sealed class MemoryCacheStoreExpirationTests
 
         bool found = store.TryGetValue("key5", out _);
         found.Should().BeTrue("past-ExpiresAt with no stale windows should stay for conditional revalidation (LRU eviction only)");
+    }
+
+    // ── Revalidation grace (real clock — IMemoryCache evicts on its own clock)
+
+    [Fact]
+    public async Task Set_WithETag_DefaultGrace_EntrySurvivesFreshnessExpiry()
+    {
+        MemoryCacheStore store = CreateStore();
+        // 1-second freshness TTL, validator present, no stale windows.
+        // Without RevalidationGraceSeconds the entry would be physically evicted at expiry,
+        // making conditional revalidation impossible (the bug found by the demo app's Demo 2).
+        CacheEntry entry = BuildEntry(
+            expiresAt: DateTimeOffset.UtcNow.AddSeconds(1.2),
+            eTag: "\"v1\"");
+
+        store.Set("grace-etag", entry);
+
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
+
+        bool found = store.TryGetValue("grace-etag", out _);
+        found.Should().BeTrue("an entry with an ETag must be retained beyond freshness expiry so If-None-Match revalidation can be sent");
+    }
+
+    [Fact]
+    public async Task Set_WithLastModified_DefaultGrace_EntrySurvivesFreshnessExpiry()
+    {
+        MemoryCacheStore store = CreateStore();
+        CacheEntry entry = BuildEntry(
+            expiresAt: DateTimeOffset.UtcNow.AddSeconds(1.2),
+            lastModified: DateTimeOffset.UtcNow.AddMinutes(-10));
+
+        store.Set("grace-lm", entry);
+
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
+
+        bool found = store.TryGetValue("grace-lm", out _);
+        found.Should().BeTrue("an entry with Last-Modified must be retained beyond freshness expiry so If-Modified-Since revalidation can be sent");
+    }
+
+    [Fact]
+    public async Task Set_WithETag_ZeroGrace_EntryEvictedAtFreshnessExpiry()
+    {
+        MemoryCacheStore store = CreateStore(new CacheOptions { RevalidationGraceSeconds = 0 });
+        CacheEntry entry = BuildEntry(
+            expiresAt: DateTimeOffset.UtcNow.AddSeconds(1.2),
+            eTag: "\"v1\"");
+
+        store.Set("no-grace", entry);
+
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
+
+        bool found = store.TryGetValue("no-grace", out _);
+        found.Should().BeFalse("RevalidationGraceSeconds = 0 restores eviction exactly at expiry");
+    }
+
+    [Fact]
+    public async Task Set_WithoutValidator_GraceDoesNotApply_EntryEvictedAtFreshnessExpiry()
+    {
+        MemoryCacheStore store = CreateStore();
+        // No ETag / Last-Modified → nothing to revalidate with, so the grace period must not apply.
+        CacheEntry entry = BuildEntry(expiresAt: DateTimeOffset.UtcNow.AddSeconds(1.2));
+
+        store.Set("no-validator", entry);
+
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
+
+        bool found = store.TryGetValue("no-validator", out _);
+        found.Should().BeFalse("entries without a validator cannot be revalidated and must not be retained by the grace period");
     }
 
     // ── Fresh entries still retrievable ──────────────────────────────────────

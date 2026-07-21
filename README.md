@@ -97,6 +97,7 @@ Stampede.Http occupies a specific niche: **origin-controlled caching semantics i
 | `MaxCacheSize` | `null` | Total byte ceiling; when reached, LRU entries are evicted. `null` = no limit |
 | `DefaultStaleIfErrorSeconds` | `0` | Stale-if-error window when the response carries no directive (`0` = disabled) |
 | `DefaultStaleWhileRevalidateSeconds` | `0` | Stale-while-revalidate window when the response carries no directive (`0` = disabled) |
+| `RevalidationGraceSeconds` | `300` | How long entries with an `ETag`/`Last-Modified` are kept in the store past freshness + stale windows, so expiry triggers a conditional `If-None-Match`/`If-Modified-Since` revalidation instead of a full refetch (`0` = evict at expiry) |
 | `NormalizeQueryParameters` | `false` | Sort query params before building the cache key, so `/items?b=2&a=1` and `/items?a=1&b=2` hit the same entry |
 
 ### CoalescerOptions
@@ -138,7 +139,7 @@ builder.Services
     .UseDistributedCacheStore();
 ```
 
-Entries are serialised to JSON. The backing store TTL is extended by `Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)` beyond `ExpiresAt` so stale-serving windows survive process restarts.
+Entries are serialised to JSON. The backing store TTL is extended by `Max(StaleIfErrorSeconds, StaleWhileRevalidateSeconds)` beyond `ExpiresAt` — plus `RevalidationGraceSeconds` when the entry carries a validator — so stale-serving windows and conditional revalidation survive process restarts.
 
 > Coalescing still applies. Concurrent cache misses are deduplicated before the distributed store is consulted.
 
@@ -243,6 +244,9 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## Changelog
+
+### v2.1.0
+- **`RevalidationGraceSeconds`** (default `300`) — entries carrying an `ETag` or `Last-Modified` validator are now retained in the cache store for a grace period beyond their freshness lifetime and stale windows. Previously a response with `max-age=N` and no stale windows was physically evicted exactly at expiry, so the conditional-revalidation path (`If-None-Match` / `If-Modified-Since` → `304`) could never fire with the default store — every expiry was a full refetch. Applies to both `MemoryCacheStore` and `DistributedCacheStore`; entries without a validator are unaffected. Set to `0` to restore the previous evict-at-expiry behavior. Like `MaxCacheSize`, this is a structural option read at registration time.
 
 ### v2.0.0
 - **Package renamed: `Coalesce.Http` → `Stampede.Http`.** Same library, same feature set; the new name reflects what it does — stopping cache stampedes. Migration:

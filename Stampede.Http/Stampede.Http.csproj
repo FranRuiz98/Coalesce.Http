@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
-    <Version>2.0.0</Version>
-    <PackageVersion>2.0.0</PackageVersion>
+    <Version>2.1.0</Version>
+    <PackageVersion>2.1.0</PackageVersion>
     <Authors>FranRuiz98</Authors>
     <Description>RFC 9111 HTTP caching and request coalescing for the .NET HttpClient pipeline. Deduplicates concurrent requests, prevents cache stampedes, and adds ETag/Last-Modified revalidation, stale-while-revalidate and stale-if-error (RFC 5861), and distributed cache support — composable DelegatingHandlers that slot in alongside Polly.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
