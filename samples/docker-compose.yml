@@ -1,0 +1,27 @@
+name: stampede-http-sample
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ..
+      dockerfile: samples/Stampede.Http.Sample.Api/Dockerfile
+    ports:
+      - "5080:8080"
+
+  client:
+    build:
+      context: ..
+      dockerfile: samples/Stampede.Http.Sample.Client/Dockerfile
+    environment:
+      - API__BASEURL=http://api:8080
+      - REDIS__CONNECTION=redis:6379
+    depends_on:
+      - api
+      - redis
+    deploy:
+      replicas: 2
