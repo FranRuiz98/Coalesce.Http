@@ -93,29 +93,20 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return false;
         }
 
-        switch (response.StatusCode)
+        return response.StatusCode switch
         {
-            case HttpStatusCode.OK:
-                // 200 is always eligible (guards above already applied)
-                return true;
-
-            case HttpStatusCode.MovedPermanently:
-                // 301: heuristically cacheable — max-age/Expires/DefaultTtl all valid (RFC 9111 §3.2)
-                return true;
-
-            case HttpStatusCode.NotFound:
-            case HttpStatusCode.MethodNotAllowed:
-            case HttpStatusCode.Gone:
-            case HttpStatusCode.RequestUriTooLong:
+            HttpStatusCode.OK => true, // 200 is always eligible (guards above already applied)
+            HttpStatusCode.MovedPermanently => true, // 301: heuristically cacheable
+            HttpStatusCode.NotFound or
+            HttpStatusCode.MethodNotAllowed or
+            HttpStatusCode.Gone or
+            HttpStatusCode.RequestUriTooLong =>
                 // 404/405/410/414: only cache when an explicit freshness directive is present
-                // (no heuristic fallback — caching indefinite errors is dangerous)
-                return cacheControl?.MaxAge is not null
-                    || cacheControl?.SharedMaxAge is not null
-                    || response.Content?.Headers.Expires is not null;
-
-            default:
-                return false;
-        }
+                cacheControl?.MaxAge is not null
+                || cacheControl?.SharedMaxAge is not null
+                || response.Content?.Headers.Expires is not null,
+            _ => false
+        };
     }
 
     /// <summary>
