@@ -648,13 +648,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
             if (revalResponse.StatusCode == HttpStatusCode.NotModified)
             {
-                CacheEntry refreshed = entry with
-                {
-                    ExpiresAt = FreshnessCalculator.ComputeExpiresAt(revalResponse, Options, _timeProvider),
-                    StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(revalResponse, Options),
-                    StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(revalResponse, Options),
-                    MustRevalidate = revalResponse.Headers.CacheControl?.MustRevalidate == true || revalResponse.Headers.CacheControl?.ProxyRevalidate == true
-                };
+                CacheEntry refreshed = RefreshFromNotModified(entry, revalResponse);
                 await WriteEntryAsync(getKey, refreshed, ct).ConfigureAwait(false);
                 metrics?.RecordCacheHit(HttpMethod.Head);
                 HttpResponseMessage headRefreshed = CreateResponse(refreshed);
@@ -760,13 +754,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         if (response.StatusCode == HttpStatusCode.NotModified)
         {
-            CacheEntry refreshed = entry with
-            {
-                ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, Options, _timeProvider),
-                StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, Options),
-                StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, Options),
-                MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
-            };
+            CacheEntry refreshed = RefreshFromNotModified(entry, response);
             await WriteEntryAsync(key, refreshed, ct).ConfigureAwait(false);
             metrics?.RecordCacheHit();
             return CreateResponse(refreshed);
@@ -781,6 +769,40 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         }
 
         return response;
+    }
+
+    /// <summary>
+    /// Builds the refreshed cache entry after a successful <c>304 Not Modified</c> revalidation
+    /// (RFC 9111 §4.3.4): the stored header fields are replaced by those carried on the 304,
+    /// freshness metadata is recomputed, and <see cref="CacheEntry.StoredAt"/> is reset to the
+    /// revalidation time so the <c>Age</c> calculation restarts from the validation response (§4.2.3)
+    /// instead of continuing to grow from the original store time.
+    /// </summary>
+    private CacheEntry RefreshFromNotModified(CacheEntry entry, HttpResponseMessage response)
+    {
+        // §4.3.4 — update the stored response's header fields with those provided in the 304
+        Dictionary<string, string[]> headers = new(entry.Headers.Count, StringComparer.OrdinalIgnoreCase);
+
+        foreach (KeyValuePair<string, string[]> header in entry.Headers)
+        {
+            headers[header.Key] = header.Value;
+        }
+
+        foreach (KeyValuePair<string, IEnumerable<string>> header in response.Headers)
+        {
+            headers[header.Key] = [.. header.Value];
+        }
+
+        return entry with
+        {
+            StoredAt = _timeProvider.GetUtcNow(),
+            Headers = headers,
+            ETag = response.Headers.ETag?.Tag ?? entry.ETag,
+            ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, Options, _timeProvider),
+            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, Options),
+            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, Options),
+            MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
+        };
     }
 
     /// <summary>
@@ -838,13 +860,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
                     if (response.StatusCode == HttpStatusCode.NotModified)
                     {
-                        CacheEntry refreshed = entry with
-                        {
-                            ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, Options, _timeProvider),
-                            StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, Options),
-                            StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, Options),
-                            MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
-                        };
+                        CacheEntry refreshed = RefreshFromNotModified(entry, response);
                         await WriteEntryAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
                     }
                     else if (IsResponseCacheable(response))
