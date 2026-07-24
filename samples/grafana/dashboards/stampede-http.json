@@ -7,7 +7,6 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
   "refresh": "5s",
   "time": {
     "from": "now-15m",
@@ -186,7 +185,7 @@
         },
         "textMode": "auto"
       },
-      "description": "How much of the control group's origin traffic Stampede.Http absorbed. Give the stack a minute to settle before reading this."
+      "description": "How much of the control group's origin traffic Stampede.Http absorbed. Give the stack a minute to settle before reading this — and read it with the panel to the right. Expect roughly 40-55%, bounded by (1 - poll interval / max-age): this sample runs 5-10 s TTLs against a 2 s poll so expiry is visible in a short demo. Almost half of what remains is /flaky returning 503, which no cache can avoid — stale-if-error rescues the caller after the origin has failed, so the request still goes out. This figure also ignores the two biggest wins: the stampede (20 concurrent callers -> 1 origin call) and latency. Finally, it is normalised per client: because client-a and client-b share one Redis cache they also share the refresh work, so together they cost the origin LESS on /catalog and /feed than the single uncached control client does."
     },
     {
       "id": 5,
@@ -245,7 +244,7 @@
       "gridPos": {
         "x": 0,
         "y": 6,
-        "w": 12,
+        "w": 8,
         "h": 8
       },
       "datasource": {
@@ -284,16 +283,16 @@
           "sort": "desc"
         }
       },
-      "description": "Measured at the origin, attributed via the X-Client header. The baseline line sitting well above the others is the entire value proposition of the library."
+      "description": "Measured at the origin, attributed via the X-Client header. The baseline line sitting above the others is the entire value proposition of the library."
     },
     {
       "id": 7,
       "type": "timeseries",
       "title": "Origin requests/s by endpoint",
       "gridPos": {
-        "x": 12,
+        "x": 8,
         "y": 6,
-        "w": 12,
+        "w": 8,
         "h": 8
       },
       "datasource": {
@@ -332,10 +331,58 @@
           "sort": "desc"
         }
       },
-      "description": "Which resources still cost origin calls. /flaky and /feed keep refreshing; /slow should be near-flat once its 30 s entry is warm."
+      "description": "Which resources still cost origin calls. /slow should be near-flat once its 30 s entry is warm; /flaky never settles, because its 503s are not cacheable."
     },
     {
       "id": 8,
+      "type": "timeseries",
+      "title": "Origin load avoided by endpoint",
+      "gridPos": {
+        "x": 16,
+        "y": 6,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "100 * (1 - (sum by (endpoint) (rate(sample_api_origin_requests_total{client=~\"client-a|client-b\", endpoint=~\"/catalog|/feed|/flaky\"}[5m])) / 2) / sum by (endpoint) (rate(sample_api_origin_requests_total{client=\"client-baseline\", endpoint=~\"/catalog|/feed|/flaky\"}[5m])))",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "The headline percentage, split by resource — this is the panel that explains it. /catalog (max-age=10) and /feed (max-age=5) sit near their theoretical ceiling of 1 - 2 s poll / max-age. /flaky sits far below because a third of every minute it returns 503, and failures always reach the origin. Raise the TTLs in the origin's Cache-Control headers and every line here moves up."
+    },
+    {
+      "id": 9,
       "type": "row",
       "title": "Caching",
       "gridPos": {
@@ -348,7 +395,7 @@
       "panels": []
     },
     {
-      "id": 9,
+      "id": 10,
       "type": "timeseries",
       "title": "Cache hits vs misses (rate, per client)",
       "gridPos": {
@@ -401,7 +448,7 @@
       "description": "client-a and client-b share one Redis-backed cache — a hit on one instance often reflects an entry the other stored."
     },
     {
-      "id": 10,
+      "id": 11,
       "type": "timeseries",
       "title": "Stale responses served (rate, per client)",
       "gridPos": {
@@ -454,7 +501,7 @@
       "description": "stale-if-error spikes while /flaky is in its failure window, or while the api container is stopped."
     },
     {
-      "id": 11,
+      "id": 12,
       "type": "timeseries",
       "title": "Revalidations & unsafe-method invalidations (per client)",
       "gridPos": {
@@ -507,7 +554,7 @@
       "description": "Revalidations are conditional requests that came back 304 — an expiry settled without transferring a body. Invalidations are entries evicted by POST /catalog."
     },
     {
-      "id": 12,
+      "id": 13,
       "type": "stat",
       "title": "Cache hits (total)",
       "gridPos": {
@@ -556,7 +603,7 @@
       }
     },
     {
-      "id": 13,
+      "id": 14,
       "type": "stat",
       "title": "Cache misses (total)",
       "gridPos": {
@@ -605,7 +652,7 @@
       }
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "stat",
       "title": "Revalidations (total)",
       "gridPos": {
@@ -654,7 +701,7 @@
       }
     },
     {
-      "id": 15,
+      "id": 16,
       "type": "row",
       "title": "Coalescing",
       "gridPos": {
@@ -667,7 +714,7 @@
       "panels": []
     },
     {
-      "id": 16,
+      "id": 17,
       "type": "timeseries",
       "title": "Deduplicated requests (rate, per client)",
       "gridPos": {
@@ -715,7 +762,7 @@
       "description": "Coalescing is per process, so these lines move independently even though the two instances share a cache. Expect a spike during the opening stampede and at every origin refresh."
     },
     {
-      "id": 17,
+      "id": 18,
       "type": "timeseries",
       "title": "In-flight coalesced origin calls (per client)",
       "gridPos": {
@@ -763,7 +810,7 @@
       "description": "How many origin calls are open right now. A burst of N callers should keep this at 1."
     },
     {
-      "id": 18,
+      "id": 19,
       "type": "stat",
       "title": "Deduplicated (total)",
       "gridPos": {
@@ -812,7 +859,7 @@
       }
     },
     {
-      "id": 19,
+      "id": 20,
       "type": "stat",
       "title": "Coalescing timeouts (5m)",
       "gridPos": {
@@ -866,7 +913,7 @@
       "description": "Waiters that gave up on the winner and issued their own request. Should stay at zero unless the origin is slower than CoalescingTimeout."
     },
     {
-      "id": 20,
+      "id": 21,
       "type": "stat",
       "title": "Invalidations (total)",
       "gridPos": {

@@ -110,10 +110,52 @@ sum by (client) (rate(sample_api_origin_requests_total[1m]))
 
 The Grafana dashboard's top row turns that into three numbers: origin req/s per Stampede.Http client, origin req/s for the control client, and **origin load avoided** as a percentage. It restricts itself to the endpoints all three clients exercise (`/catalog`, `/feed`, `/flaky`), so the feature tour's extra traffic cannot flatter the result.
 
-Under load, the latency side of the same comparison — from an actual k6 run:
+### How to read that percentage
+
+The headline figure lands around **40%**, and taken on its own it is misleading in both directions. The **Origin load avoided by endpoint** panel next to it is the one that explains why. A real 5-minute window, per client:
+
+| Endpoint | Stampede.Http | control | avoided |
+|---|---:|---:|---:|
+| `/catalog` (incl. the `POST`s, which no cache can absorb) | 0.153 req/s | 0.366 req/s | **58%** |
+| `/feed` | 0.153 | 0.332 | **54%** |
+| `/flaky` | 0.438 | 0.542 | **19%** |
+| **total** | **0.743** | **1.240** | **40%** |
+
+Expect your own figures to differ by several points: `/flaky` alternates between healthy and failing on a 60-second cycle, so a 5-minute rate window never covers a whole number of cycles. The shape of the table is stable; the exact digits are not.
+
+**`/flaky` drags the total down, and that is correct.** It accounts for well over half of the origin traffic Stampede.Http did *not* avoid, because **a failure cannot be cached ahead of time**. `stale-if-error` rescues the caller *after* the origin has failed, so the request goes out regardless — and Polly then retries it twice. `/flaky` is down for 20 seconds of every 60. On healthy traffic only, the saving is around **56%**.
+
+**The TTLs here are deliberately hostile.** For a cache that obeys origin headers, the ceiling is roughly `1 − poll interval / max-age`:
+
+| `max-age` | polled every | ceiling |
+|---|---|---:|
+| 5 s (`/feed`) | ~3 s | ~40–60% |
+| 10 s (`/catalog`) | ~3 s | ~70% |
+| 60 s (a realistic catalogue) | ~3 s | **~95%** |
+
+`/catalog` and `/feed` both land within a few points of that ceiling. `max-age=5` exists so revalidation and expiry are visible inside a 90-second demo, not because anything real is declared that way. Raise the numbers in [`CoreEndpoints.cs`](Stampede.Http.Sample.Api/Endpoints/CoreEndpoints.cs), rebuild the `api` service, and every line on the by-endpoint panel moves up.
+
+**The per-client normalisation hides the best result.** The dashboard divides the two Stampede.Http clients' load by two to compare like with like. But because they share one Redis cache, they also share the refresh work — so in aggregate:
+
+| Endpoint | `client-a` + `client-b` | one `client-baseline` |
+|---|---:|---:|
+| `/catalog` | 0.305 req/s | 0.366 req/s |
+| `/feed` | 0.305 | 0.332 |
+| `/flaky` | 0.875 | 0.542 |
+
+On the cacheable endpoints, **two instances cost the origin less than one uncached instance**: the marginal origin cost of adding a replica is close to zero. On `/flaky` the opposite holds — two instances cost roughly twice as much, because uncacheable failures scale with replica count. Both facts follow from the same design and neither is visible in the headline number.
+
+**And the panel misses the two cases that matter most.** It measures steady-state polling. It does not measure the stampede — 20 concurrent callers collapsing into 1 origin call is a 95% saving on that burst — nor latency:
 
 ```
 ✓ { mode:stampede }...: avg=12.57ms  med=752µs  p(95)=1.37ms
+```
+
+against an origin that takes 300 ms to 2 s per call. To see the saving on healthy traffic only:
+
+```promql
+100 * (1 - (sum(rate(sample_api_origin_requests_total{client=~"client-a|client-b",endpoint=~"/catalog|/feed"}[5m])) / 2)
+         / sum(rate(sample_api_origin_requests_total{client="client-baseline",endpoint=~"/catalog|/feed"}[5m])))
 ```
 
 ---
@@ -234,5 +276,6 @@ This runs in CI on every push, and the sample projects are part of `Stampede.Htt
 ## What this sample does not claim
 
 - **Coalescing is per process.** The Redis cache is shared, but if both replicas miss the same key at the same instant, each makes its own origin call — 2, not 1, and still not 20. Cross-instance deduplication would need a distributed lock, which is out of scope for an HTTP client library. The dashboard makes this visible: cache-hit panels for `client-a` and `client-b` rise together; coalescing panels move independently.
-- **The percentages depend on the workload.** A loop dominated by `max-age=5` endpoints shows a smaller reduction than a real catalogue with minute-scale TTLs. Change `Sample:Workload:Interval` and the origin's `Cache-Control` headers to model your own traffic before quoting a number.
+- **The headline percentage is a property of the workload, not of the library.** It is bounded by `1 − interval / max-age`, and this sample deliberately runs 5–10 second TTLs against a 2-second poll so that expiry is visible in a short demo. Read [How to read that percentage](#how-to-read-that-percentage) before quoting the number anywhere, and model your own TTLs first.
+- **Failures are not cacheable.** `stale-if-error` rescues the caller *after* the origin has failed; the request still goes out, and Polly retries it. Most of the origin traffic Stampede.Http cannot avoid in this sample is `/flaky` returning 503 — and unlike cacheable traffic, that cost scales with the number of replicas rather than being shared.
 - **The origin is a toy.** It fabricates latency with `Task.Delay` and keeps its state in memory. Its job is to emit realistic headers, not to be a realistic service.
