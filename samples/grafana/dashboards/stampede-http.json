@@ -1,0 +1,156 @@
+{
+  "uid": "stampede-http-overview",
+  "title": "Stampede.Http — Live Metrics",
+  "tags": ["stampede-http"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Cache hits (total)",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum(stampede_http_cache_hits_requests_total)", "legendFormat": "hits", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green" }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Cache misses (total)",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum(stampede_http_cache_misses_requests_total)", "legendFormat": "misses", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "orange" }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cache hit ratio",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        {
+          "expr": "100 * sum(stampede_http_cache_hits_requests_total) / (sum(stampede_http_cache_hits_requests_total) + sum(stampede_http_cache_misses_requests_total))",
+          "legendFormat": "hit ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "red", "value": 0 }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 70 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Deduplicated by coalescing (total)",
+      "description": "Requests that reused an in-flight response instead of triggering their own origin call — the stampede protection at work.",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum(stampede_http_coalescing_deduplicated_requests_total)", "legendFormat": "deduplicated", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue" }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Cache hits vs misses (rate, per instance)",
+      "description": "Both client-a and client-b share the same Redis-backed cache — a hit on one instance often reflects an entry stored by the other.",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum by (instance) (rate(stampede_http_cache_hits_requests_total[1m]))", "legendFormat": "{{instance}} hits/s", "refId": "A" },
+        { "expr": "sum by (instance) (rate(stampede_http_cache_misses_requests_total[1m]))", "legendFormat": "{{instance}} misses/s", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Coalescing: deduplicated requests (rate, per instance)",
+      "description": "Coalescing is per-process: each instance's burst is deduplicated independently, it is NOT shared across instances like the cache is.",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum by (instance) (rate(stampede_http_coalescing_deduplicated_requests_total[1m]))", "legendFormat": "{{instance}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Stale responses served (rate, per instance)",
+      "description": "stale-if-error (RFC 5861 §4) shields callers during origin outages; stale-while-revalidate (§3) serves instantly and refreshes in the background.",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum by (instance) (rate(stampede_http_cache_stale_errors_served_requests_total[1m]))", "legendFormat": "{{instance}} stale-if-error/s", "refId": "A" },
+        { "expr": "sum by (instance) (rate(stampede_http_cache_stale_while_revalidate_served_requests_total[1m]))", "legendFormat": "{{instance}} stale-while-revalidate/s", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Coalescing in-flight requests (current, per instance)",
+      "description": "Current number of origin calls in flight through the coalescer. Should return to 0 shortly after every burst.",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum by (instance) (stampede_http_coalescing_inflight_requests)", "legendFormat": "{{instance}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Revalidations & unsafe-method invalidations (per instance)",
+      "description": "Revalidations: conditional If-None-Match/If-Modified-Since requests on stale entries. Invalidations: cache entries evicted by a successful POST/PUT/DELETE/PATCH (RFC 9111 §4.4) — shared across instances via Redis.",
+      "gridPos": { "x": 0, "y": 20, "w": 18, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum by (instance) (increase(stampede_http_cache_revalidations_requests_total[1m]))", "legendFormat": "{{instance}} revalidations", "refId": "A" },
+        { "expr": "sum by (instance) (increase(stampede_http_cache_invalidations_entries_total[1m]))", "legendFormat": "{{instance}} invalidations", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 40 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Coalescing timeouts (5m)",
+      "description": "Waiters that gave up on the shared in-flight response and fell back to an independent request. Zero is expected unless CoalescingTimeout is exceeded under heavy load.",
+      "gridPos": { "x": 18, "y": 20, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "targets": [
+        { "expr": "sum(increase(stampede_http_coalescing_timeouts_requests_total[5m]) or vector(0))", "legendFormat": "timeouts", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    }
+  ]
+}
