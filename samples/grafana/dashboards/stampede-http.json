@@ -131,7 +131,7 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Origin load avoided",
+      "title": "Origin load avoided (all traffic)",
       "gridPos": {
         "x": 12,
         "y": 1,
@@ -190,7 +190,7 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "Cache hit ratio (Stampede.Http clients)",
+      "title": "Origin load avoided (healthy traffic)",
       "gridPos": {
         "x": 18,
         "y": 1,
@@ -203,8 +203,8 @@
       },
       "targets": [
         {
-          "expr": "100 * sum(stampede_http_cache_hits_requests_total) / (sum(stampede_http_cache_hits_requests_total) + sum(stampede_http_cache_misses_requests_total))",
-          "legendFormat": "hit ratio",
+          "expr": "100 * (1 - (sum(rate(sample_api_origin_requests_total{client=~\"client-a|client-b\", endpoint=~\"/catalog|/feed\"}[5m])) / 2) / (sum(rate(sample_api_origin_requests_total{client=\"client-baseline\", endpoint=~\"/catalog|/feed\"}[5m]))))",
+          "legendFormat": "avoided",
           "refId": "A",
           "instant": true
         }
@@ -218,8 +218,16 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "orange",
+                "value": 25
+              },
+              {
+                "color": "green",
+                "value": 50
               }
             ]
           },
@@ -235,7 +243,8 @@
           ]
         },
         "textMode": "auto"
-      }
+      },
+      "description": "The same measurement with /flaky excluded — identical in every other respect, so the pair isolates exactly one variable: whether the origin is failing. Expect roughly 55%. /flaky is not diluting the number to its left, it is actively penalising it: uncacheable 503s are the single largest source of origin traffic in this sample, and they scale with replica count while cache hits are shared. Neither figure includes /slow, where the concurrent burst lands and coalescing pushes the saving above 90%; add it to both selectors and this reads around 73%."
     },
     {
       "id": 6,
@@ -556,11 +565,62 @@
     {
       "id": 13,
       "type": "stat",
-      "title": "Cache hits (total)",
+      "title": "Cache hit ratio",
       "gridPos": {
         "x": 12,
         "y": 23,
-        "w": 4,
+        "w": 3,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "100 * sum(stampede_http_cache_hits_requests_total) / (sum(stampede_http_cache_hits_requests_total) + sum(stampede_http_cache_misses_requests_total))",
+          "legendFormat": "hit ratio",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      },
+      "description": "Client-side view: the share of outbound requests the cache answered without touching the network. Related to the origin-load panels above, but not the same measurement — a revalidation that comes back 304 is a miss here and still saves the origin a body."
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Cache hits (total)",
+      "gridPos": {
+        "x": 15,
+        "y": 23,
+        "w": 3,
         "h": 4
       },
       "datasource": {
@@ -603,13 +663,13 @@
       }
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "stat",
       "title": "Cache misses (total)",
       "gridPos": {
-        "x": 16,
+        "x": 18,
         "y": 23,
-        "w": 4,
+        "w": 3,
         "h": 4
       },
       "datasource": {
@@ -652,13 +712,13 @@
       }
     },
     {
-      "id": 15,
+      "id": 16,
       "type": "stat",
       "title": "Revalidations (total)",
       "gridPos": {
-        "x": 20,
+        "x": 21,
         "y": 23,
-        "w": 4,
+        "w": 3,
         "h": 4
       },
       "datasource": {
@@ -701,7 +761,7 @@
       }
     },
     {
-      "id": 16,
+      "id": 17,
       "type": "row",
       "title": "Coalescing",
       "gridPos": {
@@ -714,7 +774,7 @@
       "panels": []
     },
     {
-      "id": 17,
+      "id": 18,
       "type": "timeseries",
       "title": "Deduplicated requests (per 2 min, per client)",
       "gridPos": {
@@ -762,7 +822,7 @@
       "description": "Counted over a window rather than as a rate, because deduplication is inherently bursty: it can only happen when identical requests overlap in time AND the entry is not already fresh in the cache. The steady-state workload fires a burst of 8 concurrent GET /slow every few iterations, so this stays flat while the 30 s entry is warm and spikes to ~7 the moment it expires — that expiry is precisely the cache stampede the library is named for. Coalescing is per process, so client-a and client-b spike independently even though they share a cache."
     },
     {
-      "id": 18,
+      "id": 19,
       "type": "timeseries",
       "title": "In-flight coalesced origin calls (per client)",
       "gridPos": {
@@ -810,7 +870,7 @@
       "description": "How many origin calls are open right now. A burst of N callers should keep this at 1. It is a gauge sampled every 5 s, so short bursts can fall between scrapes and leave it reading zero — the panel to the left is the reliable one."
     },
     {
-      "id": 19,
+      "id": 20,
       "type": "stat",
       "title": "Deduplicated (total)",
       "gridPos": {
@@ -859,7 +919,7 @@
       }
     },
     {
-      "id": 20,
+      "id": 21,
       "type": "stat",
       "title": "Coalescing timeouts (5m)",
       "gridPos": {
@@ -913,7 +973,7 @@
       "description": "Waiters that gave up on the winner and issued their own request. Should stay at zero unless the origin is slower than CoalescingTimeout."
     },
     {
-      "id": 21,
+      "id": 22,
       "type": "stat",
       "title": "Invalidations (total)",
       "gridPos": {

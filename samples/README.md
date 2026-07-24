@@ -117,24 +117,35 @@ That second line is the cache stampede the library is named for, happening on sc
 sum by (client) (rate(sample_api_origin_requests_total[1m]))
 ```
 
-The Grafana dashboard's top row turns that into three numbers: origin req/s per Stampede.Http client, origin req/s for the control client, and **origin load avoided** as a percentage. It restricts itself to the endpoints all three clients exercise (`/catalog`, `/feed`, `/flaky`), so the feature tour's extra traffic cannot flatter the result.
+The Grafana dashboard's top row turns that into four numbers: origin req/s per Stampede.Http client, origin req/s for the control client, and **origin load avoided** twice — once over all traffic and once with the failing endpoint excluded. All four restrict themselves to the endpoints every client exercises, so the feature tour's extra traffic cannot flatter the result.
 
 ### How to read that percentage
 
-The headline figure lands around **40%**, and taken on its own it is misleading in both directions. The **Origin load avoided by endpoint** panel next to it is the one that explains why. A real 5-minute window, per client:
+The headline reads around **37%**, and on its own it is misleading in both directions. The top row therefore carries **two** figures — *all traffic* and *healthy traffic*, identical selectors but for `/flaky` — so the pair isolates a single variable. Origin request rates from a real 5-minute window:
 
-| Endpoint | Stampede.Http | control | avoided |
-|---|---:|---:|---:|
-| `/catalog` (incl. the `POST`s, which no cache can absorb) | 0.153 req/s | 0.366 req/s | **58%** |
-| `/feed` | 0.153 | 0.332 | **54%** |
-| `/flaky` | 0.438 | 0.542 | **19%** |
-| **total** | **0.743** | **1.240** | **40%** |
+| Endpoint | `client-a` | `client-b` | `a`+`b` | control | avoided, per client |
+|---|---:|---:|---:|---:|---:|
+| `/catalog` | 0.125 | 0.122 | 0.247 | 0.325 | **62%** |
+| `/feed` | 0.146 | 0.146 | 0.292 | 0.295 | **51%** |
+| `/flaky` | 0.441 | 0.454 | **0.895** | **0.485** | **8%** |
+| `/slow` † | 0.027 | 0.027 | 0.054 | 0.461 | **94%** |
 
-Expect your own figures to differ by several points: `/flaky` alternates between healthy and failing on a 60-second cycle, so a 5-minute rate window never covers a whole number of cycles. The shape of the table is stable; the exact digits are not.
+† excluded from the headline — see below.
 
-**`/flaky` drags the total down, and that is correct.** It accounts for well over half of the origin traffic Stampede.Http did *not* avoid, because **a failure cannot be cached ahead of time**. `stale-if-error` rescues the caller *after* the origin has failed, so the request goes out regardless — and Polly then retries it twice. `/flaky` is down for 20 seconds of every 60. On healthy traffic only, the saving is around **56%**.
+Expect your own digits to differ by several points: `/flaky` alternates between healthy and failing on a 60-second cycle, which never divides evenly into a 5-minute rate window. The shape is stable; the digits are not.
 
-**The TTLs here are deliberately hostile.** For a cache that obeys origin headers, the ceiling is roughly `1 − poll interval / max-age`:
+Which gives, depending on what you include:
+
+| Scenario | avoided |
+|---|---:|
+| All traffic — the headline | **~37%** |
+| Excluding `/flaky` — sequential polling only | **~57%** |
+| Excluding `/flaky`, including the concurrent `/slow` burst | **~73%** |
+| `/slow` alone | **~94%** |
+
+**`/flaky` is not diluting the headline — it is actively penalising it.** It sends more traffic to the origin than the other three endpoints combined, and the cached clients send *more* of it than the control client does. That is not a defect: when the origin returns 503, every client has to ask before `stale-if-error` can rescue it, and Polly then retries twice. **Uncacheable failures scale with replica count; cache hits are shared.** `/flaky` is down for 20 seconds of every 60 — a harsher failure budget than any real dependency.
+
+**The TTLs are deliberately hostile.** For a cache that obeys origin headers, the ceiling is roughly `1 − poll interval / max-age`:
 
 | `max-age` | polled every | ceiling |
 |---|---|---:|
@@ -142,38 +153,19 @@ Expect your own figures to differ by several points: `/flaky` alternates between
 | 10 s (`/catalog`) | ~3 s | ~70% |
 | 60 s (a realistic catalogue) | ~3 s | **~95%** |
 
-`/catalog` and `/feed` both land within a few points of that ceiling. `max-age=5` exists so revalidation and expiry are visible inside a 90-second demo, not because anything real is declared that way. Raise the numbers in [`CoreEndpoints.cs`](Stampede.Http.Sample.Api/Endpoints/CoreEndpoints.cs), rebuild the `api` service, and every line on the by-endpoint panel moves up.
+`/catalog` and `/feed` both land within a few points of it. `max-age=5` exists so expiry and revalidation are visible inside a 90-second demo, not because anything real is declared that way. Raise the numbers in [`CoreEndpoints.cs`](Stampede.Http.Sample.Api/Endpoints/CoreEndpoints.cs), rebuild the `api` service, and every line on the by-endpoint panel moves up.
 
-**The per-client normalisation hides the best result.** The dashboard divides the two Stampede.Http clients' load by two to compare like with like. But because they share one Redis cache, they also share the refresh work — so in aggregate:
+**The per-client normalisation hides the best result.** The dashboard divides the two clients' load by two to compare like with like. But they share one Redis cache, so they also share the refresh work: read the `a`+`b` column against the control column and **two instances cost the origin less than one uncached instance** on every cacheable endpoint. Excluding `/flaky`, the two replicas together generate 0.593 req/s against the control client's 1.081 — **45% less origin load from twice the application capacity**. On `/flaky`, for the reason above, the opposite holds.
 
-| Endpoint | `client-a` + `client-b` | one `client-baseline` |
-|---|---:|---:|
-| `/catalog` | 0.305 req/s | 0.366 req/s |
-| `/feed` | 0.305 | 0.332 |
-| `/flaky` | 0.875 | 0.542 |
+**And `/slow` is left out on purpose.** It is the one endpoint the steady state hits with 8 concurrent callers, so it is where coalescing rather than caching does the work — a 94% saving. Keeping it out of the headline is what makes ~37% a floor rather than a figure flattered by picking favourable traffic. The **Deduplicated requests** panel shows the same event from the client's side: flat while the entry is warm, spiking to ~7 the moment it expires.
 
-On the cacheable endpoints, **two instances cost the origin less than one uncached instance**: the marginal origin cost of adding a replica is close to zero. On `/flaky` the opposite holds — two instances cost roughly twice as much, because uncacheable failures scale with replica count. Both facts follow from the same design and neither is visible in the headline number.
-
-**And the panel misses the two cases that matter most.** It covers `/catalog`, `/feed` and `/flaky`, which the workload polls one request at a time — the least favourable traffic shape there is. It deliberately excludes `/slow`, the endpoint the steady state hits with 8 concurrent callers, where coalescing rather than caching does the work:
-
-| Endpoint | Stampede.Http | control | avoided |
-|---|---:|---:|---:|
-| `/slow` (8 concurrent callers per burst) | 0.00–0.02 req/s | 0.30 req/s | **~95%** |
-
-Keeping `/slow` out of the headline is what makes the 40% a floor rather than a flattering average. The **Deduplicated requests** panel shows the same event from the client's side: flat while the entry is warm, spiking to ~7 the moment it expires.
-
-The panel also says nothing about latency:
+None of this is latency, either:
 
 ```
 ✓ { mode:stampede }...: avg=12.57ms  med=752µs  p(95)=1.37ms
 ```
 
-against an origin that takes 300 ms to 2 s per call. To see the saving on healthy traffic only:
-
-```promql
-100 * (1 - (sum(rate(sample_api_origin_requests_total{client=~"client-a|client-b",endpoint=~"/catalog|/feed"}[5m])) / 2)
-         / sum(rate(sample_api_origin_requests_total{client="client-baseline",endpoint=~"/catalog|/feed"}[5m])))
-```
+against an origin that takes 300 ms to 2 s per call.
 
 ---
 
