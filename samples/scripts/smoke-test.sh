@@ -84,11 +84,13 @@ before=$(origin_count "GET /slow")
 burst "$CLIENT/api/slow" 20
 after=$(origin_count "GET /slow")
 delta=$((after - before))
-# The entry may already be warm from the scripted workload, so 0 is also correct.
-if (( delta <= 1 )); then
+# 0 is also correct: the entry may already be warm from the scripted workload. And the
+# workload's own /slow burst can land inside this window and contribute one call of its
+# own, so allow 2 — still decisive against the 20 the control instance produces below.
+if (( delta <= 2 )); then
   pass "20 concurrent callers → $delta origin call(s)"
 else
-  fail "20 concurrent callers → $delta origin calls (expected at most 1)"
+  fail "20 concurrent callers → $delta origin calls (expected at most 2)"
 fi
 
 # ---------------------------------------------------------------------------

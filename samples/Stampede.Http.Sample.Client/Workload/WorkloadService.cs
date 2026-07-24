@@ -127,9 +127,12 @@ public sealed class WorkloadService(
     private async Task RunSteadyStateAsync(WorkloadOptions workload, CancellationToken ct)
     {
         logger.LogInformation(
-            "PHASE 3 — steady state: /catalog + /feed + /flaky every {Interval}s. " +
+            "PHASE 3 — steady state: /catalog + /feed + /flaky every {Interval}s, plus a burst of " +
+            "{BurstSize} concurrent GET /slow every {BurstEvery} iterations. " +
             "Try `docker compose stop api` and watch stale-if-error keep the 200s coming.",
-            workload.Interval.TotalSeconds);
+            workload.Interval.TotalSeconds,
+            workload.BurstSize,
+            workload.BurstEvery);
 
         for (int iteration = 1; !ct.IsCancellationRequested; iteration++)
         {
@@ -140,6 +143,23 @@ public sealed class WorkloadService(
                 foreach (string path in SteadyStatePaths)
                 {
                     logger.LogInformation("  {Probe}", (await Probe(client, path, token).ConfigureAwait(false)).Describe());
+                }
+
+                // Every Nth iteration: a burst of concurrent callers for one resource. The three
+                // probes above are sequential, so on their own they give the coalescer nothing to
+                // do — deduplication needs requests to overlap in time, which is what real inbound
+                // traffic does and a polling loop does not.
+                if (currentIteration % workload.BurstEvery == 0)
+                {
+                    ProbeResult[] burst = await Task.WhenAll(
+                        Enumerable.Range(0, workload.BurstSize)
+                                  .Select(_ => Probe(client, "/slow", token))).ConfigureAwait(false);
+
+                    logger.LogInformation(
+                        "  burst: {Size} concurrent GET /slow -> {Ok} OK in {Elapsed} ms (slowest caller)",
+                        workload.BurstSize,
+                        burst.Count(r => r.StatusCode == 200),
+                        burst.Max(r => r.ElapsedMs));
                 }
 
                 // Every Nth iteration: mutate the catalog. The 2xx POST makes CachingMiddleware

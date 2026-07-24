@@ -96,7 +96,16 @@ The tour runs on `client-a` only (`Sample:Workload:FeatureTour`): its assertions
 
 ### Phase 3 — steady state
 
-`/catalog` + `/feed` + `/flaky` every two seconds, forever, with a `POST /catalog` every tenth iteration. This is what feeds the dashboards.
+`/catalog` + `/feed` + `/flaky` every two seconds, forever, with a `POST /catalog` every tenth iteration and a burst of **8 concurrent `GET /slow`** every fifth. This is what feeds the dashboards.
+
+The burst is not decoration. The three probes are sequential, so on their own they never put two requests in flight and the coalescer correctly has nothing to do — leaving the coalescing panels at zero and the library's headline feature looking dead. Real inbound traffic overlaps; this models that. In the logs you can watch it alternate:
+
+```
+burst: 8 concurrent GET /slow -> 8 OK in    0 ms (slowest caller)   ← entry fresh, all 8 from cache
+burst: 8 concurrent GET /slow -> 8 OK in 2000 ms (slowest caller)   ← entry expired: 1 origin call, 7 deduplicated
+```
+
+That second line is the cache stampede the library is named for, happening on schedule.
 
 ---
 
@@ -145,7 +154,15 @@ Expect your own figures to differ by several points: `/flaky` alternates between
 
 On the cacheable endpoints, **two instances cost the origin less than one uncached instance**: the marginal origin cost of adding a replica is close to zero. On `/flaky` the opposite holds — two instances cost roughly twice as much, because uncacheable failures scale with replica count. Both facts follow from the same design and neither is visible in the headline number.
 
-**And the panel misses the two cases that matter most.** It measures steady-state polling. It does not measure the stampede — 20 concurrent callers collapsing into 1 origin call is a 95% saving on that burst — nor latency:
+**And the panel misses the two cases that matter most.** It covers `/catalog`, `/feed` and `/flaky`, which the workload polls one request at a time — the least favourable traffic shape there is. It deliberately excludes `/slow`, the endpoint the steady state hits with 8 concurrent callers, where coalescing rather than caching does the work:
+
+| Endpoint | Stampede.Http | control | avoided |
+|---|---:|---:|---:|
+| `/slow` (8 concurrent callers per burst) | 0.00–0.02 req/s | 0.30 req/s | **~95%** |
+
+Keeping `/slow` out of the headline is what makes the 40% a floor rather than a flattering average. The **Deduplicated requests** panel shows the same event from the client's side: flat while the entry is warm, spiking to ~7 the moment it expires.
+
+The panel also says nothing about latency:
 
 ```
 ✓ { mode:stampede }...: avg=12.57ms  med=752µs  p(95)=1.37ms

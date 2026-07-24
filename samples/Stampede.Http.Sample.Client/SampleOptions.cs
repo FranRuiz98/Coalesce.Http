@@ -100,4 +100,21 @@ public sealed class WorkloadOptions
     /// <summary>Iterations between <c>POST /catalog</c> mutations.</summary>
     [Range(1, 1000)]
     public int MutateEvery { get; set; } = 10;
+
+    /// <summary>Iterations between concurrent bursts on <c>/slow</c>.</summary>
+    /// <remarks>
+    /// Without this the steady state issues one request at a time and there is, correctly,
+    /// nothing to deduplicate — the coalescing panels sit at zero and the library's headline
+    /// feature looks dead. Real inbound traffic is concurrent; this models that.
+    /// <para>
+    /// The burst deliberately targets <c>/slow</c>, which is excluded from the origin-load
+    /// comparison, so adding it does not inflate the headline percentage.
+    /// </para>
+    /// </remarks>
+    [Range(1, 1000)]
+    public int BurstEvery { get; set; } = 5;
+
+    /// <summary>Number of concurrent callers in each steady-state burst.</summary>
+    [Range(1, 1000)]
+    public int BurstSize { get; set; } = 8;
 }

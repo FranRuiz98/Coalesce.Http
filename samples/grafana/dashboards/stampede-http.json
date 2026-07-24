@@ -716,7 +716,7 @@
     {
       "id": 17,
       "type": "timeseries",
-      "title": "Deduplicated requests (rate, per client)",
+      "title": "Deduplicated requests (per 2 min, per client)",
       "gridPos": {
         "x": 0,
         "y": 32,
@@ -729,17 +729,17 @@
       },
       "targets": [
         {
-          "expr": "sum by (client) (rate(stampede_http_coalescing_deduplicated_requests_total[1m]))",
+          "expr": "sum by (client) (increase(stampede_http_coalescing_deduplicated_requests_total[2m]))",
           "legendFormat": "{{client}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "short",
           "custom": {
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 0,
             "lineWidth": 2,
             "stacking": {
               "mode": "none",
@@ -759,7 +759,7 @@
           "sort": "desc"
         }
       },
-      "description": "Coalescing is per process, so these lines move independently even though the two instances share a cache. Expect a spike during the opening stampede and at every origin refresh."
+      "description": "Counted over a window rather than as a rate, because deduplication is inherently bursty: it can only happen when identical requests overlap in time AND the entry is not already fresh in the cache. The steady-state workload fires a burst of 8 concurrent GET /slow every few iterations, so this stays flat while the 30 s entry is warm and spikes to ~7 the moment it expires — that expiry is precisely the cache stampede the library is named for. Coalescing is per process, so client-a and client-b spike independently even though they share a cache."
     },
     {
       "id": 18,
@@ -807,7 +807,7 @@
           "sort": "desc"
         }
       },
-      "description": "How many origin calls are open right now. A burst of N callers should keep this at 1."
+      "description": "How many origin calls are open right now. A burst of N callers should keep this at 1. It is a gauge sampled every 5 s, so short bursts can fall between scrapes and leave it reading zero — the panel to the left is the reliable one."
     },
     {
       "id": 19,
