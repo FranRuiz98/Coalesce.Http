@@ -3,4 +3,8 @@
   <Project Path="Stampede.Http.Demo/Stampede.Http.Demo.csproj" />
   <Project Path="Stampede.Http.Tests/Stampede.Http.Tests.csproj" />
   <Project Path="Stampede.Http/Stampede.Http.csproj" />
+  <Folder Name="/samples/">
+    <Project Path="samples/Stampede.Http.Sample.Api/Stampede.Http.Sample.Api.csproj" />
+    <Project Path="samples/Stampede.Http.Sample.Client/Stampede.Http.Sample.Client.csproj" />
+  </Folder>
 </Solution>

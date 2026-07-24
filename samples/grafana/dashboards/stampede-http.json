@@ -1,156 +1,918 @@
 {
   "uid": "stampede-http-overview",
   "title": "Stampede.Http — Live Metrics",
-  "tags": ["stampede-http"],
+  "tags": [
+    "stampede-http",
+    "sample"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5s",
-  "time": { "from": "now-15m", "to": "now" },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
   "panels": [
     {
       "id": 1,
-      "type": "stat",
-      "title": "Cache hits (total)",
-      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
-      "targets": [
-        { "expr": "sum(stampede_http_cache_hits_requests_total)", "legendFormat": "hits", "refId": "A" }
-      ],
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green" }] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "type": "row",
+      "title": "Origin load — Stampede.Http vs the control group",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
     },
     {
       "id": 2,
       "type": "stat",
-      "title": "Cache misses (total)",
-      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "title": "Origin req/s caused by one Stampede.Http client",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
       "targets": [
-        { "expr": "sum(stampede_http_cache_misses_requests_total)", "legendFormat": "misses", "refId": "A" }
+        {
+          "expr": "sum(rate(sample_api_origin_requests_total{client=~\"client-a|client-b\", endpoint=~\"/catalog|/feed|/flaky\"}[5m])) / 2",
+          "legendFormat": "stampede",
+          "refId": "A",
+          "instant": true
+        }
       ],
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "orange" }] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      },
+      "description": "Rate of requests that actually reached the origin, averaged across client-a and client-b, counting only the endpoints every client exercises (/catalog, /feed, /flaky)."
     },
     {
       "id": 3,
       "type": "stat",
-      "title": "Cache hit ratio",
-      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "title": "Origin req/s caused by the control client",
+      "gridPos": {
+        "x": 6,
+        "y": 1,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sample_api_origin_requests_total{client=\"client-baseline\", endpoint=~\"/catalog|/feed|/flaky\"}[5m]))",
+          "legendFormat": "baseline",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      },
+      "description": "Identical app, identical workload, identical Polly pipeline — without Stampede.Http."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Origin load avoided",
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "100 * (1 - (sum(rate(sample_api_origin_requests_total{client=~\"client-a|client-b\", endpoint=~\"/catalog|/feed|/flaky\"}[5m])) / 2) / (sum(rate(sample_api_origin_requests_total{client=\"client-baseline\", endpoint=~\"/catalog|/feed|/flaky\"}[5m]))))",
+          "legendFormat": "avoided",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 25
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      },
+      "description": "How much of the control group's origin traffic Stampede.Http absorbed. Give the stack a minute to settle before reading this."
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Cache hit ratio (Stampede.Http clients)",
+      "gridPos": {
+        "x": 18,
+        "y": 1,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
       "targets": [
         {
           "expr": "100 * sum(stampede_http_cache_hits_requests_total) / (sum(stampede_http_cache_hits_requests_total) + sum(stampede_http_cache_misses_requests_total))",
           "legendFormat": "hit ratio",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Origin requests/s by client",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (client) (rate(sample_api_origin_requests_total[1m]))",
+          "legendFormat": "{{client}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "decimals": 1,
-          "min": 0,
-          "max": 100,
-          "color": { "mode": "thresholds" },
-          "thresholds": { "steps": [{ "color": "red", "value": 0 }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 70 }] }
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
         },
         "overrides": []
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
-    },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "Deduplicated by coalescing (total)",
-      "description": "Requests that reused an in-flight response instead of triggering their own origin call — the stampede protection at work.",
-      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
-      "targets": [
-        { "expr": "sum(stampede_http_coalescing_deduplicated_requests_total)", "legendFormat": "deduplicated", "refId": "A" }
-      ],
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue" }] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
-    },
-    {
-      "id": 5,
-      "type": "timeseries",
-      "title": "Cache hits vs misses (rate, per instance)",
-      "description": "Both client-a and client-b share the same Redis-backed cache — a hit on one instance often reflects an entry stored by the other.",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
-      "targets": [
-        { "expr": "sum by (instance) (rate(stampede_http_cache_hits_requests_total[1m]))", "legendFormat": "{{instance}} hits/s", "refId": "A" },
-        { "expr": "sum by (instance) (rate(stampede_http_cache_misses_requests_total[1m]))", "legendFormat": "{{instance}} misses/s", "refId": "B" }
-      ],
-      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Coalescing: deduplicated requests (rate, per instance)",
-      "description": "Coalescing is per-process: each instance's burst is deduplicated independently, it is NOT shared across instances like the cache is.",
-      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
-      "targets": [
-        { "expr": "sum by (instance) (rate(stampede_http_coalescing_deduplicated_requests_total[1m]))", "legendFormat": "{{instance}}", "refId": "A" }
-      ],
-      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Measured at the origin, attributed via the X-Client header. The baseline line sitting well above the others is the entire value proposition of the library."
     },
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Stale responses served (rate, per instance)",
-      "description": "stale-if-error (RFC 5861 §4) shields callers during origin outages; stale-while-revalidate (§3) serves instantly and refreshes in the background.",
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "title": "Origin requests/s by endpoint",
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
       "targets": [
-        { "expr": "sum by (instance) (rate(stampede_http_cache_stale_errors_served_requests_total[1m]))", "legendFormat": "{{instance}} stale-if-error/s", "refId": "A" },
-        { "expr": "sum by (instance) (rate(stampede_http_cache_stale_while_revalidate_served_requests_total[1m]))", "legendFormat": "{{instance}} stale-while-revalidate/s", "refId": "B" }
+        {
+          "expr": "sum by (endpoint) (rate(sample_api_origin_requests_total[1m]))",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Which resources still cost origin calls. /flaky and /feed keep refreshing; /slow should be near-flat once its 30 s entry is warm."
     },
     {
       "id": 8,
-      "type": "timeseries",
-      "title": "Coalescing in-flight requests (current, per instance)",
-      "description": "Current number of origin calls in flight through the coalescer. Should return to 0 shortly after every burst.",
-      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
-      "targets": [
-        { "expr": "sum by (instance) (stampede_http_coalescing_inflight_requests)", "legendFormat": "{{instance}}", "refId": "A" }
-      ],
-      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "type": "row",
+      "title": "Caching",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
     },
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Revalidations & unsafe-method invalidations (per instance)",
-      "description": "Revalidations: conditional If-None-Match/If-Modified-Since requests on stale entries. Invalidations: cache entries evicted by a successful POST/PUT/DELETE/PATCH (RFC 9111 §4.4) — shared across instances via Redis.",
-      "gridPos": { "x": 0, "y": 20, "w": 18, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "title": "Cache hits vs misses (rate, per client)",
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
       "targets": [
-        { "expr": "sum by (instance) (increase(stampede_http_cache_revalidations_requests_total[1m]))", "legendFormat": "{{instance}} revalidations", "refId": "A" },
-        { "expr": "sum by (instance) (increase(stampede_http_cache_invalidations_entries_total[1m]))", "legendFormat": "{{instance}} invalidations", "refId": "B" }
+        {
+          "expr": "sum by (client) (rate(stampede_http_cache_hits_requests_total[1m]))",
+          "legendFormat": "{{client}} hits/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (client) (rate(stampede_http_cache_misses_requests_total[1m]))",
+          "legendFormat": "{{client}} misses/s",
+          "refId": "B"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 40 } }, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "client-a and client-b share one Redis-backed cache — a hit on one instance often reflects an entry the other stored."
     },
     {
       "id": 10,
+      "type": "timeseries",
+      "title": "Stale responses served (rate, per client)",
+      "gridPos": {
+        "x": 12,
+        "y": 15,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (client) (rate(stampede_http_cache_stale_errors_served_requests_total[1m]))",
+          "legendFormat": "{{client}} stale-if-error/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (client) (rate(stampede_http_cache_stale_while_revalidate_served_requests_total[1m]))",
+          "legendFormat": "{{client}} stale-while-revalidate/s",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "stale-if-error spikes while /flaky is in its failure window, or while the api container is stopped."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Revalidations & unsafe-method invalidations (per client)",
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (client) (increase(stampede_http_cache_revalidations_requests_total[1m]))",
+          "legendFormat": "{{client}} revalidations",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (client) (increase(stampede_http_cache_invalidations_entries_total[1m]))",
+          "legendFormat": "{{client}} invalidations",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Revalidations are conditional requests that came back 304 — an expiry settled without transferring a body. Invalidations are entries evicted by POST /catalog."
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Cache hits (total)",
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(stampede_http_cache_hits_requests_total)",
+          "legendFormat": "hits",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Cache misses (total)",
+      "gridPos": {
+        "x": 16,
+        "y": 23,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(stampede_http_cache_misses_requests_total)",
+          "legendFormat": "misses",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Revalidations (total)",
+      "gridPos": {
+        "x": 20,
+        "y": 23,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(stampede_http_cache_revalidations_requests_total)",
+          "legendFormat": "revalidations",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Coalescing",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Deduplicated requests (rate, per client)",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (client) (rate(stampede_http_coalescing_deduplicated_requests_total[1m]))",
+          "legendFormat": "{{client}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Coalescing is per process, so these lines move independently even though the two instances share a cache. Expect a spike during the opening stampede and at every origin refresh."
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "In-flight coalesced origin calls (per client)",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (client) (stampede_http_coalescing_inflight_requests)",
+          "legendFormat": "{{client}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "How many origin calls are open right now. A burst of N callers should keep this at 1."
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Deduplicated (total)",
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(stampede_http_coalescing_deduplicated_requests_total)",
+          "legendFormat": "deduplicated",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 19,
       "type": "stat",
       "title": "Coalescing timeouts (5m)",
-      "description": "Waiters that gave up on the shared in-flight response and fell back to an independent request. Zero is expected unless CoalescingTimeout is exceeded under heavy load.",
-      "gridPos": { "x": 18, "y": 20, "w": 6, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "stampede-http-prometheus" },
+      "gridPos": {
+        "x": 8,
+        "y": 40,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
       "targets": [
-        { "expr": "sum(increase(stampede_http_coalescing_timeouts_requests_total[5m]) or vector(0))", "legendFormat": "timeouts", "refId": "A" }
+        {
+          "expr": "sum(increase(stampede_http_coalescing_timeouts_requests_total[5m]) or vector(0))",
+          "legendFormat": "timeouts",
+          "refId": "A",
+          "instant": true
+        }
       ],
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      },
+      "description": "Waiters that gave up on the winner and issued their own request. Should stay at zero unless the origin is slower than CoalescingTimeout."
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Invalidations (total)",
+      "gridPos": {
+        "x": 16,
+        "y": 40,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "stampede-http-prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(stampede_http_cache_invalidations_entries_total)",
+          "legendFormat": "invalidations",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
     }
   ]
 }

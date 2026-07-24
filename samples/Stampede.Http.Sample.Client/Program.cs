@@ -1,206 +1,91 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Http.Resilience;
-using OpenTelemetry;
 using OpenTelemetry.Metrics;
-using Polly;
-using Stampede.Http.Extensions;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Stampede.Http.Metrics;
-using System.Diagnostics;
-using System.Diagnostics.Metrics;
+using Stampede.Http.Sample.Client;
+using Stampede.Http.Sample.Client.Endpoints;
+using Stampede.Http.Sample.Client.Workload;
 
 // ---------------------------------------------------------------------------
-// Sample client — a realistic Stampede.Http pipeline:
+// Sample client — an ordinary ASP.NET Core service that happens to call another
+// service. The Stampede.Http pipeline lives entirely in PipelineRegistration;
+// nothing else in this app knows it exists.
 //
-//   CachingMiddleware  (RFC 9111, entries shared across instances via Redis)
-//     └─ CoalescingHandler  (per-process request deduplication)
-//          └─ Polly  (retry with exponential backoff + per-attempt timeout)
+//   CachingMiddleware      ← RFC 9111, entries shared across instances via Redis
+//     └─ CoalescingHandler ← per-process request deduplication
+//          └─ Polly        ← retry with exponential backoff + per-attempt timeout
 //               └─ SocketsHttpHandler → the sample API
 //
-// Run two replicas (docker compose does) and watch the Redis-backed cache be
-// shared while coalescing stays per-process.
+// The same image runs three ways in docker compose: two Stampede.Http instances
+// (client-a, client-b) and one control instance with the handlers removed
+// (client-baseline), so the dashboards can show the difference as a number.
 // ---------------------------------------------------------------------------
 
-string instance = Environment.GetEnvironmentVariable("INSTANCE") ?? Environment.MachineName;
-string apiBase = Environment.GetEnvironmentVariable("API__BASEURL") ?? "http://localhost:5080";
-string redisConn = Environment.GetEnvironmentVariable("REDIS__CONNECTION") ?? "localhost:6379";
+var builder = WebApplication.CreateBuilder(args);
 
-Log($"starting — api: {apiBase}  redis: {redisConn}", ConsoleColor.Cyan);
+// A mounted directory rather than a mounted file: editing a bind-mounted file on the host
+// usually replaces the inode, and the container would keep reading the old one.
+builder.Configuration.AddJsonFile("config/client.json", optional: true, reloadOnChange: true);
 
-// -- In-process metrics: aggregate every stampede_http.* instrument ----------
-var metrics = new Dictionary<string, long>(StringComparer.Ordinal);
-using var listener = new MeterListener();
-listener.InstrumentPublished = (instrument, l) =>
+builder.Logging.ClearProviders();
+builder.Logging.AddSimpleConsole(o =>
 {
-    if (instrument.Meter.Name == StampedeHttpMetrics.MeterName)
-        l.EnableMeasurementEvents(instrument);
-};
-listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
-{
-    lock (metrics)
-    {
-        metrics.TryGetValue(instrument.Name, out long prev);
-        metrics[instrument.Name] = prev + measurement;
-    }
+    o.SingleLine = true;
+    o.TimestampFormat = "HH:mm:ss ";
 });
-listener.Start();
 
-// -- Prometheus scrape endpoint: the same "Stampede.Http" meter, exported via
-// OpenTelemetry so Prometheus/Grafana can graph it in real time. -------------
-int metricsPort = int.TryParse(Environment.GetEnvironmentVariable("METRICS__PORT"), out int parsedPort) ? parsedPort : 9464;
-// Must be a real resolvable hostname/IP — the Prometheus exporter's Host option is validated
-// via UriBuilder (rejects "+"/"*") and .NET's HttpListener itself refuses a literal "0.0.0.0".
-// docker-compose sets METRICS__HOST to each container's own `hostname` (e.g. "client-a"),
-// which Docker's embedded DNS also resolves to that same container from other containers —
-// so this is reachable AND unprivileged. Local (non-container) runs keep "localhost" below.
-string metricsHost = Environment.GetEnvironmentVariable("METRICS__HOST") ?? "localhost";
-using MeterProvider meterProvider = Sdk.CreateMeterProviderBuilder()
-    .AddMeter(StampedeHttpMetrics.MeterName)
-    .AddPrometheusHttpListener(o =>
+builder.Services.AddOptions<SampleOptions>()
+    .Bind(builder.Configuration.GetSection(SampleOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+// Also needed eagerly: the pipeline shape is decided at registration time.
+SampleOptions sample = builder.Configuration.GetSection(SampleOptions.SectionName).Get<SampleOptions>() ?? new SampleOptions();
+
+builder.Services.AddOriginClient(builder.Configuration, sample);
+builder.Services.AddSingleton<StampedeCounters>();
+builder.Services.AddTransient<FeatureTour>();
+builder.Services.AddHostedService<WorkloadService>();
+
+string? otlpEndpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r
+        .AddService(serviceName: "sample-client", serviceInstanceId: sample.Instance)
+        .AddAttributes([new KeyValuePair<string, object>("stampede.enabled", sample.Pipeline.Enabled)]))
+    .WithMetrics(m => m
+        .AddMeter(StampedeHttpMetrics.MeterName)
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddPrometheusExporter())
+    .WithTracing(t =>
     {
-        o.Host = metricsHost;
-        o.Port = metricsPort;
-    })
-    .Build();
-Log($"Prometheus metrics exposed — host: {metricsHost}  port: {metricsPort}  path: /metrics", ConsoleColor.Cyan);
+        t.AddAspNetCoreInstrumentation(o =>
+            o.Filter = ctx => !ctx.Request.Path.StartsWithSegments("/metrics")
+                              && !ctx.Request.Path.StartsWithSegments("/healthz"));
 
-// -- The pipeline ------------------------------------------------------------
-var services = new ServiceCollection();
+        // The outgoing spans are the interesting ones: a coalesced burst produces a single
+        // child span for N inbound requests, which is the whole story in one screenshot.
+        t.AddHttpClientInstrumentation();
 
-services.AddStackExchangeRedisCache(o => o.Configuration = redisConn);
-
-services.AddHttpClient("api", c => c.BaseAddress = new Uri(apiBase))
-    .AddStampedeHttp(
-        configureCaching: o => o.DefaultTtl = TimeSpan.FromSeconds(5),
-        configureCoalescing: o => o.CoalescingTimeout = TimeSpan.FromSeconds(10))
-    .UseDistributedCacheStore()
-    .AddResilienceHandler("sample-resilience", b =>
-    {
-        // Polly sits BELOW the coalescer: a retry storm is coalesced too.
-        b.AddRetry(new HttpRetryStrategyOptions
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
         {
-            MaxRetryAttempts = 2,
-            Delay = TimeSpan.FromMilliseconds(200),
-            BackoffType = DelayBackoffType.Exponential,
-        });
-        b.AddTimeout(TimeSpan.FromSeconds(5));
+            t.AddOtlpExporter();
+        }
     });
 
-await using var provider = services.BuildServiceProvider();
-var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient("api");
+var app = builder.Build();
 
-// -- Wait for the API --------------------------------------------------------
-for (int attempt = 1; ; attempt++)
-{
-    try
-    {
-        using var ping = await client.GetAsync("/stats");
-        if (ping.IsSuccessStatusCode) break;
-    }
-    catch when (attempt < 30)
-    {
-    }
+app.MapBffEndpoints();
+app.MapPrometheusScrapingEndpoint();
 
-    if (attempt >= 30)
-    {
-        Log("API not reachable after 30 attempts — giving up.", ConsoleColor.Red);
-        return 1;
-    }
+app.Logger.LogInformation(
+    "Starting {Instance} — origin: {ApiBaseUrl}, Stampede.Http: {Enabled}, Redis: {Redis}",
+    sample.Instance,
+    sample.ApiBaseUrl,
+    sample.Pipeline.Enabled ? "enabled" : "DISABLED (control group)",
+    sample.Pipeline is { Enabled: true, UseRedis: true } && !string.IsNullOrWhiteSpace(sample.RedisConnection)
+        ? sample.RedisConnection
+        : "in-memory store");
 
-    await Task.Delay(1000);
-}
-
-Log("API is up.", ConsoleColor.Cyan);
-
-// -- Phase 1: the stampede ---------------------------------------------------
-Log("PHASE 1 — stampede: 10 concurrent GET /slow (origin takes ~2 s each)", ConsoleColor.Yellow);
-var sw = Stopwatch.StartNew();
-var burst = Enumerable.Range(0, 10).Select(_ => client.GetAsync("/slow")).ToArray();
-var burstResponses = await Task.WhenAll(burst);
-sw.Stop();
-Log($"  10 callers finished in {sw.ElapsedMilliseconds} ms — " +
-    $"{burstResponses.Count(r => r.IsSuccessStatusCode)}/10 OK. " +
-    "Coalescing collapsed this instance's burst into (at most) one origin call.", ConsoleColor.Green);
-
-// -- Phase 2: steady-state loop ----------------------------------------------
-Log("PHASE 2 — steady state: /catalog + /feed + /flaky every 2 s. " +
-    "Try `docker compose stop api` and watch stale-if-error shield the 200s.", ConsoleColor.Yellow);
-
-int iteration = 0;
-while (true)
-{
-    iteration++;
-
-    await Probe("/catalog");
-    await Probe("/feed");
-    await Probe("/flaky");
-
-    // Every 10th iteration: mutate the catalog. The 2xx POST makes
-    // CachingMiddleware evict the shared /catalog entry (RFC 9111 §4.4),
-    // so the next GET — from ANY instance — refetches and sees a new ETag.
-    if (iteration % 10 == 0)
-    {
-        try
-        {
-            using var post = await client.PostAsync("/catalog", content: null);
-            Log($"  POST /catalog -> {(int)post.StatusCode} — cached entry invalidated for every instance", ConsoleColor.Magenta);
-        }
-        catch (Exception ex)
-        {
-            Log($"  POST /catalog failed: {ex.GetBaseException().Message}", ConsoleColor.Red);
-        }
-    }
-
-    if (iteration % 8 == 0)
-    {
-        PrintMetrics();
-    }
-
-    await Task.Delay(2000);
-}
-
-async Task Probe(string path)
-{
-    var probeSw = Stopwatch.StartNew();
-    try
-    {
-        using var response = await client!.GetAsync(path);
-        probeSw.Stop();
-
-        TimeSpan? age = response.Headers.Age;
-        string ageText = age is null ? "fresh from origin" : $"Age: {age.Value.TotalSeconds:F0}s";
-        string body = await response.Content.ReadAsStringAsync();
-        if (body.Length > 60) body = body[..60] + "…";
-
-        var color = response.IsSuccessStatusCode
-            ? (age is { TotalSeconds: > 10 } ? ConsoleColor.DarkYellow : ConsoleColor.Green)
-            : ConsoleColor.Red;
-        string staleHint = age is { TotalSeconds: > 10 } ? "  [served beyond max-age: stale window or revalidated entry]" : string.Empty;
-
-        Log($"  GET {path,-9} -> {(int)response.StatusCode}  {probeSw.ElapsedMilliseconds,5} ms  ({ageText}){staleHint}  {body}", color);
-    }
-    catch (Exception ex)
-    {
-        probeSw.Stop();
-        Log($"  GET {path,-9} -> EXCEPTION after {probeSw.ElapsedMilliseconds} ms: {ex.GetBaseException().Message}", ConsoleColor.Red);
-    }
-}
-
-void PrintMetrics()
-{
-    lock (metrics)
-    {
-        if (metrics.Count == 0) return;
-        Log("  ── stampede_http metrics (this instance) ─────────────────", ConsoleColor.Cyan);
-        foreach (var (name, value) in metrics.OrderBy(kv => kv.Key))
-        {
-            Log($"     {name,-50} {value,6}", ConsoleColor.Cyan);
-        }
-    }
-}
-
-void Log(string message, ConsoleColor color)
-{
-    Console.ForegroundColor = color;
-    Console.WriteLine($"[{instance}] {message}");
-    Console.ResetColor();
-}
+app.Run();

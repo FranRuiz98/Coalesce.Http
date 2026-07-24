@@ -24,6 +24,8 @@ jobs:
       - name: Restore
         run: dotnet restore Stampede.Http.slnx
 
+      # The solution includes samples/, so a sample that stops compiling fails CI
+      # instead of rotting unnoticed.
       - name: Build
         run: dotnet build Stampede.Http.slnx -c Release --no-restore
 
@@ -32,3 +34,25 @@ jobs:
 
       - name: Demo smoke test
         run: dotnet run -c Release --no-build --project Stampede.Http.Demo
+
+  # Brings the whole sample stack up (origin + Redis + three clients + Prometheus +
+  # Grafana + Jaeger) and asserts the behaviour the sample README claims, using the
+  # origin's own request counters as the source of truth.
+  samples-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # KEEP_STACK leaves the containers up so the log-dump step below has something
+      # to read; the runner is thrown away either way.
+      - name: Run the sample stack smoke test
+        working-directory: samples
+        env:
+          KEEP_STACK: "1"
+        run: bash scripts/smoke-test.sh
+
+      - name: Dump container logs on failure
+        if: failure()
+        working-directory: samples
+        run: docker compose logs --tail 200

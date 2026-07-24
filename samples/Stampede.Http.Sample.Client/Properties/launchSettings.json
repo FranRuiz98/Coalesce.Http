@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "client": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5081",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Sample__Instance": "local"
+      }
+    },
+    "client (no redis)": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5081",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Sample__Instance": "local",
+        "Sample__Pipeline__UseRedis": "false"
+      }
+    },
+    "client (baseline, no Stampede.Http)": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5082",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Sample__Instance": "local-baseline",
+        "Sample__Pipeline__Enabled": "false",
+        "Sample__Workload__FeatureTour": "false"
+      }
+    }
+  }
+}
