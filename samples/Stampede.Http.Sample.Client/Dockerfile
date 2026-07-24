@@ -1,5 +1,6 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
+COPY Directory.Build.props Directory.Build.props
 COPY README.md README.md
 COPY Stampede.Http/ Stampede.Http/
 COPY samples/Stampede.Http.Sample.Client/ samples/Stampede.Http.Sample.Client/
