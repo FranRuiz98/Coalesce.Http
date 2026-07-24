@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 5s
+  # Prometheus 3.x negotiates UTF-8 metric names (dots preserved) with targets that
+  # support it — the OTel exporter does. Force the classic underscore-escaped scheme
+  # so metric names stay predictable (stampede_http_cache_hits_requests_total, not
+  # "stampede_http.cache.hits_requests_total").
+  metric_name_escaping_scheme: underscores
+
+scrape_configs:
+  - job_name: stampede-http-clients
+    static_configs:
+      - targets:
+          - client-a:9464
+          - client-b:9464
+        labels:
+          app: stampede-http-sample

@@ -1,5 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http.Resilience;
+using OpenTelemetry;
+using OpenTelemetry.Metrics;
 using Polly;
 using Stampede.Http.Extensions;
 using Stampede.Http.Metrics;
@@ -41,6 +43,25 @@ listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
     }
 });
 listener.Start();
+
+// -- Prometheus scrape endpoint: the same "Stampede.Http" meter, exported via
+// OpenTelemetry so Prometheus/Grafana can graph it in real time. -------------
+int metricsPort = int.TryParse(Environment.GetEnvironmentVariable("METRICS__PORT"), out int parsedPort) ? parsedPort : 9464;
+// Must be a real resolvable hostname/IP — the Prometheus exporter's Host option is validated
+// via UriBuilder (rejects "+"/"*") and .NET's HttpListener itself refuses a literal "0.0.0.0".
+// docker-compose sets METRICS__HOST to each container's own `hostname` (e.g. "client-a"),
+// which Docker's embedded DNS also resolves to that same container from other containers —
+// so this is reachable AND unprivileged. Local (non-container) runs keep "localhost" below.
+string metricsHost = Environment.GetEnvironmentVariable("METRICS__HOST") ?? "localhost";
+using MeterProvider meterProvider = Sdk.CreateMeterProviderBuilder()
+    .AddMeter(StampedeHttpMetrics.MeterName)
+    .AddPrometheusHttpListener(o =>
+    {
+        o.Host = metricsHost;
+        o.Port = metricsPort;
+    })
+    .Build();
+Log($"Prometheus metrics exposed — host: {metricsHost}  port: {metricsPort}  path: /metrics", ConsoleColor.Cyan);
 
 // -- The pipeline ------------------------------------------------------------
 var services = new ServiceCollection();

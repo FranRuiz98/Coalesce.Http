@@ -13,15 +13,70 @@ services:
     ports:
       - "5080:8080"
 
-  client:
+  # Two named instances (rather than `deploy.replicas`) so Prometheus has stable,
+  # individually addressable scrape targets and each instance's metrics port can be
+  # published to a predictable host port.
+  #
+  # METRICS__HOST is set to this container's own `hostname` (not a wildcard like "+"/"*"):
+  # the Prometheus HttpListener exporter's Host/Port options go through UriBuilder, which
+  # rejects wildcard syntax, and .NET's cross-platform HttpListener itself refuses a literal
+  # "0.0.0.0" too. Binding to the container's own resolvable hostname is what actually works
+  # unprivileged AND is reachable from other containers, since Docker's embedded DNS resolves
+  # that same name to this container's address on the compose network.
+  client-a:
     build:
       context: ..
       dockerfile: samples/Stampede.Http.Sample.Client/Dockerfile
+    hostname: client-a
     environment:
+      - INSTANCE=client-a
       - API__BASEURL=http://api:8080
       - REDIS__CONNECTION=redis:6379
+      - METRICS__HOST=client-a
+    ports:
+      - "9464:9464"
     depends_on:
       - api
       - redis
-    deploy:
-      replicas: 2
+
+  client-b:
+    build:
+      context: ..
+      dockerfile: samples/Stampede.Http.Sample.Client/Dockerfile
+    hostname: client-b
+    environment:
+      - INSTANCE=client-b
+      - API__BASEURL=http://api:8080
+      - REDIS__CONNECTION=redis:6379
+      - METRICS__HOST=client-b
+    ports:
+      - "9465:9464"
+    depends_on:
+      - api
+      - redis
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - client-a
+      - client-b
+
+  grafana:
+    image: grafana/grafana:13.1.1
+    environment:
+      # Anonymous admin access — convenience for this local demo only, never do this
+      # in a real deployment.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
