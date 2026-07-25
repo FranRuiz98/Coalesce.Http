@@ -33,30 +33,46 @@ public sealed class MemoryCacheStore(IMemoryCache memoryCache, CacheOptions opti
     /// <inheritdoc/>
     public void Set(string key, CacheEntry entry)
     {
+        TimeSpan retention = ComputeRetention(entry, options.RevalidationGraceSeconds);
+
+        if (retention <= TimeSpan.Zero)
+        {
+            // The entry has no freshness left, no stale window and no revalidation grace, so it can never be
+            // served nor revalidated. Retaining it would leak: IMemoryCache evicts by LRU only when a SizeLimit
+            // is configured (CacheOptions.MaxCacheSize), which is null by default — an entry stored without an
+            // expiration would then live for the lifetime of the process. Drop any previous representation at
+            // this key too, so a superseded response is never served.
+            memoryCache.Remove(key);
+            return;
+        }
+
         using ICacheEntry cacheEntry = memoryCache.CreateEntry(key);
         cacheEntry.Value = entry;
         cacheEntry.Size = ComputeSize(entry);
 
         // Use a relative TTL so the eviction deadline is clock-agnostic (works with FakeTimeProvider in tests).
-        // The window is the freshness TTL plus the largest configured stale window so entries remain available
-        // for stale-if-error / stale-while-revalidate after they become stale, plus — when the entry carries a
-        // validator (ETag / Last-Modified) — the revalidation grace period, so a conditional If-None-Match /
-        // If-Modified-Since request is still possible after all serve-stale windows have elapsed.
-        // Truncate to whole seconds: FreshnessCalculator makes a separate GetUtcNow() call from StoreAsync, so
-        // ExpiresAt - StoredAt can be a few ticks positive for max-age=0 responses on the real clock. Treating
-        // sub-second residuals as zero keeps max-age=0 entries alive for conditional revalidation (ETag / LM).
-        long staleWindowSeconds = Math.Max(entry.StaleIfErrorSeconds, entry.StaleWhileRevalidateSeconds);
-        long nominalTtlSeconds = (long)(entry.ExpiresAt - entry.StoredAt).TotalSeconds;
-        long graceSeconds = HasValidator(entry) ? options.RevalidationGraceSeconds : 0;
-        long evictionTtlSeconds = nominalTtlSeconds + staleWindowSeconds + graceSeconds;
+        cacheEntry.AbsoluteExpirationRelativeToNow = retention;
+    }
 
-        if (evictionTtlSeconds > 0)
-        {
-            cacheEntry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(evictionTtlSeconds);
-        }
-        // evictionTtlSeconds <= 0 (e.g. max-age=0 with no stale window and no grace): omit expiration so the
-        // entry stays in memory and its ETag / Last-Modified can be used for conditional revalidation
-        // (LRU eviction only).
+    /// <summary>
+    /// Computes how long an entry must be retained by the backing store: its freshness lifetime, plus the
+    /// largest configured stale window so it remains available for stale-if-error / stale-while-revalidate
+    /// after it becomes stale, plus — when it carries a validator (<c>ETag</c> / <c>Last-Modified</c>) — the
+    /// revalidation grace period, so a conditional <c>If-None-Match</c> / <c>If-Modified-Since</c> request is
+    /// still possible once all serve-stale windows have elapsed.
+    /// </summary>
+    /// <returns>
+    /// The retention window. Zero or negative means the entry can never be served nor revalidated.
+    /// A <c>max-age=0</c> response with no validator lands here: <c>FreshnessCalculator</c> makes a separate
+    /// <c>GetUtcNow()</c> call from <c>StoreAsync</c>, so on the real clock the window is a few ticks rather
+    /// than exactly zero — small enough that the entry is evicted before it could ever be read back.
+    /// </returns>
+    internal static TimeSpan ComputeRetention(CacheEntry entry, long revalidationGraceSeconds)
+    {
+        long staleWindowSeconds = Math.Max(entry.StaleIfErrorSeconds, entry.StaleWhileRevalidateSeconds);
+        long graceSeconds = HasValidator(entry) ? revalidationGraceSeconds : 0;
+
+        return (entry.ExpiresAt - entry.StoredAt) + TimeSpan.FromSeconds(staleWindowSeconds + graceSeconds);
     }
 
     /// <summary>

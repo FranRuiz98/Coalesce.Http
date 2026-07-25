@@ -56,7 +56,12 @@ public sealed class DistributedCacheStore(IDistributedCache distributedCache, Ca
     /// <inheritdoc/>
     public void Set(string key, CacheEntry entry)
     {
-        (byte[] bytes, DistributedCacheEntryOptions entryOptions) = Serialize(entry);
+        if (!TrySerialize(entry, out byte[] bytes, out DistributedCacheEntryOptions entryOptions))
+        {
+            distributedCache.Remove(key);
+            return;
+        }
+
         distributedCache.Set(key, bytes, entryOptions);
     }
 
@@ -81,7 +86,12 @@ public sealed class DistributedCacheStore(IDistributedCache distributedCache, Ca
     /// <inheritdoc/>
     public async ValueTask SetAsync(string key, CacheEntry entry, CancellationToken ct = default)
     {
-        (byte[] bytes, DistributedCacheEntryOptions entryOptions) = Serialize(entry);
+        if (!TrySerialize(entry, out byte[] bytes, out DistributedCacheEntryOptions entryOptions))
+        {
+            await distributedCache.RemoveAsync(key, ct).ConfigureAwait(false);
+            return;
+        }
+
         await distributedCache.SetAsync(key, bytes, entryOptions, ct).ConfigureAwait(false);
     }
 
@@ -92,23 +102,31 @@ public sealed class DistributedCacheStore(IDistributedCache distributedCache, Ca
     }
 
     /// <summary>
-    /// Serializes <paramref name="entry"/> to UTF-8 JSON using the source-generated context and
-    /// builds the <see cref="DistributedCacheEntryOptions"/> with an <c>AbsoluteExpiration</c>
-    /// extended by the maximum stale window — plus the revalidation grace period when the entry
-    /// carries a validator — so entries remain available for stale-if-error / stale-while-revalidate
-    /// serving and conditional revalidation after <see cref="CacheEntry.ExpiresAt"/>.
+    /// Serializes <paramref name="entry"/> to UTF-8 JSON using the source-generated context and builds the
+    /// <see cref="DistributedCacheEntryOptions"/> with an <c>AbsoluteExpiration</c> extended by the maximum
+    /// stale window — plus the revalidation grace period when the entry carries a validator — so entries
+    /// remain available for stale-if-error / stale-while-revalidate serving and conditional revalidation
+    /// after <see cref="CacheEntry.ExpiresAt"/>.
     /// </summary>
-    private (byte[] Bytes, DistributedCacheEntryOptions Options) Serialize(CacheEntry entry)
+    /// <returns>
+    /// <see langword="false"/> when the entry has no retention window left at all — it can never be served
+    /// nor revalidated, so writing it would only cost a round-trip and (on Redis) a negative TTL that deletes
+    /// the key straight away. Callers remove the key instead.
+    /// </returns>
+    private bool TrySerialize(CacheEntry entry, out byte[] bytes, out DistributedCacheEntryOptions entryOptions)
     {
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(entry, CacheEntryJsonContext.Default.CacheEntry);
+        TimeSpan retention = MemoryCacheStore.ComputeRetention(entry, options.RevalidationGraceSeconds);
 
-        long staleWindowSeconds = Math.Max(entry.StaleIfErrorSeconds, entry.StaleWhileRevalidateSeconds);
-        long graceSeconds = MemoryCacheStore.HasValidator(entry) ? options.RevalidationGraceSeconds : 0;
-        long extensionSeconds = staleWindowSeconds + graceSeconds;
-        DateTimeOffset absoluteExpiration = extensionSeconds > 0
-            ? entry.ExpiresAt + TimeSpan.FromSeconds(extensionSeconds)
-            : entry.ExpiresAt;
+        if (retention <= TimeSpan.Zero)
+        {
+            bytes = [];
+            entryOptions = new DistributedCacheEntryOptions();
+            return false;
+        }
 
-        return (bytes, new DistributedCacheEntryOptions { AbsoluteExpiration = absoluteExpiration });
+        bytes = JsonSerializer.SerializeToUtf8Bytes(entry, CacheEntryJsonContext.Default.CacheEntry);
+        entryOptions = new DistributedCacheEntryOptions { AbsoluteExpiration = entry.StoredAt + retention };
+
+        return true;
     }
 }

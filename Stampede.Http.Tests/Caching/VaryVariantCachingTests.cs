@@ -205,6 +205,75 @@ public sealed class VaryVariantCachingTests
         (await enAgain.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).Should().Be("lang=en");
     }
 
+    // ── Field-name normalization ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task VaryFieldNameCasing_DoesNotAffectVariantKeying()
+    {
+        // Field names are normalized once at store time, so an origin that changes the casing of its Vary
+        // header between responses must still resolve to the same variant.
+        int callCount = 0;
+        CachingMiddleware middleware = BuildPipeline(
+            new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions())),
+            req =>
+            {
+                callCount++;
+                HttpResponseMessage r = VaryingByLanguage(req);
+                r.Headers.Vary.Clear();
+                r.Headers.Vary.Add(callCount == 1 ? "Accept-Language" : "ACCEPT-LANGUAGE");
+                return r;
+            });
+
+        HttpMessageInvoker invoker = new(middleware);
+        const string url = "https://api.test/vary/casing";
+
+        _ = await invoker.SendAsync(Req(url, "en"), TestContext.Current.CancellationToken);
+        HttpResponseMessage second = await invoker.SendAsync(Req(url, "en"), TestContext.Current.CancellationToken);
+
+        callCount.Should().Be(1, "the second request must hit the stored variant regardless of Vary casing");
+        (await second.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).Should().Be("lang=en");
+    }
+
+    [Fact]
+    public async Task MultipleVaryFields_OrderIndependent_ResolveToTheSameVariant()
+    {
+        int callCount = 0;
+        CachingMiddleware middleware = BuildPipeline(
+            new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions())),
+            req =>
+            {
+                callCount++;
+                HttpResponseMessage r = new(HttpStatusCode.OK) { Content = new StringContent("body") };
+
+                // The origin lists the same two fields in a different order on each response.
+                if (callCount == 1)
+                {
+                    r.Headers.Vary.Add("Accept-Language");
+                    r.Headers.Vary.Add("Accept-Encoding");
+                }
+                else
+                {
+                    r.Headers.Vary.Add("Accept-Encoding");
+                    r.Headers.Vary.Add("Accept-Language");
+                }
+
+                return r;
+            });
+
+        HttpMessageInvoker invoker = new(middleware);
+        const string url = "https://api.test/vary/order";
+
+        HttpRequestMessage first = Req(url, "en");
+        first.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip");
+        _ = await invoker.SendAsync(first, TestContext.Current.CancellationToken);
+
+        HttpRequestMessage second = Req(url, "en");
+        second.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip");
+        _ = await invoker.SendAsync(second, TestContext.Current.CancellationToken);
+
+        callCount.Should().Be(1, "Vary field order must not change the variant key");
+    }
+
     private sealed class StubTransport(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)

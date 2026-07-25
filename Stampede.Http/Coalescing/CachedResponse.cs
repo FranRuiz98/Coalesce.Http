@@ -1,4 +1,6 @@
-﻿using System.Net;
+﻿using Stampede.Http.Internal;
+using System.Buffers;
+using System.Net;
 using System.Net.Http.Headers;
 
 namespace Stampede.Http.Coalescing;
@@ -29,14 +31,8 @@ internal sealed record CachedResponse(
         CancellationToken cancellationToken = default)
     {
         byte[] bodyBytes = response.Content is not null
-            ? await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false)
+            ? await ReadBoundedAsync(response.Content, maxBodyBytes, cancellationToken).ConfigureAwait(false)
             : [];
-
-        if (bodyBytes.Length > maxBodyBytes)
-        {
-            throw new InvalidOperationException(
-                $"Response body size ({bodyBytes.Length} bytes) exceeds the configured MaxResponseBodyBytes limit ({maxBodyBytes} bytes).");
-        }
 
         // RequestMessage is intentionally not cached. It is IDisposable, not thread-safe,
         // and sharing it across coalesced callers would cause subtle concurrency issues.
@@ -50,6 +46,82 @@ internal sealed record CachedResponse(
                 ? MaterializeHeaders(response.Content.Headers)
                 : []
         );
+    }
+
+    /// <summary>
+    /// Reads the response body, refusing to buffer more than <paramref name="maxBodyBytes"/>.
+    /// </summary>
+    /// <remarks>
+    /// The limit is enforced <em>while</em> reading rather than afterwards: checking the length of an
+    /// already-materialised array means a response far larger than the limit is fully allocated before it can
+    /// be rejected, which is exactly the case the limit exists to prevent. A declared <c>Content-Length</c>
+    /// rejects the response before a single byte is read; a chunked response is read incrementally and
+    /// abandoned as soon as it crosses the limit.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The body exceeds <paramref name="maxBodyBytes"/>.</exception>
+    private static async Task<byte[]> ReadBoundedAsync(HttpContent content, long maxBodyBytes, CancellationToken cancellationToken)
+    {
+        // Already materialised by an inner Stampede layer — reuse the array, there is no stream to bound.
+        if (content is BufferedByteArrayContent buffered)
+        {
+            return buffered.Buffer.Length > maxBodyBytes
+                ? throw BodyTooLarge(buffered.Buffer.Length, maxBodyBytes, exact: true)
+                : buffered.Buffer;
+        }
+
+        long? declaredLength = content.Headers.ContentLength;
+
+        if (declaredLength > maxBodyBytes)
+        {
+            throw BodyTooLarge(declaredLength.Value, maxBodyBytes, exact: true);
+        }
+
+        if (declaredLength is not null)
+        {
+            // Length known and within the limit: let the framework allocate the array exactly once.
+            return await content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Chunked / unknown length: copy incrementally so an oversized body is abandoned mid-stream.
+        Stream stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+
+        using MemoryStream sink = new();
+        byte[] rented = ArrayPool<byte>.Shared.Rent(CopyBufferSize);
+
+        try
+        {
+            long total = 0;
+            int read;
+
+            while ((read = await stream.ReadAsync(rented, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                total += read;
+
+                if (total > maxBodyBytes)
+                {
+                    throw BodyTooLarge(total, maxBodyBytes, exact: false);
+                }
+
+                sink.Write(rented, 0, read);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+
+        return sink.ToArray();
+    }
+
+    /// <summary>Matches the default copy buffer size used by <see cref="Stream.CopyToAsync(Stream)"/>.</summary>
+    private const int CopyBufferSize = 81920;
+
+    private static InvalidOperationException BodyTooLarge(long observedBytes, long maxBodyBytes, bool exact)
+    {
+        string size = exact ? $"{observedBytes} bytes" : $"more than {observedBytes} bytes";
+
+        return new InvalidOperationException(
+            $"Response body size ({size}) exceeds the configured MaxResponseBodyBytes limit ({maxBodyBytes} bytes).");
     }
 
     private static KeyValuePair<string, IEnumerable<string>>[] MaterializeHeaders(
@@ -93,7 +165,9 @@ internal sealed record CachedResponse(
 
         if (BodyBytes.Length > 0 || ContentHeaders.Count > 0)
         {
-            ByteArrayContent content = new(BodyBytes);
+            // BufferedByteArrayContent, not ByteArrayContent: it lets the caching layer above reuse these
+            // bytes directly instead of copying the whole body out again on its way into the cache.
+            BufferedByteArrayContent content = new(BodyBytes);
             foreach (KeyValuePair<string, IEnumerable<string>> header in ContentHeaders)
             {
                 _ = content.Headers.TryAddWithoutValidation(header.Key, header.Value);

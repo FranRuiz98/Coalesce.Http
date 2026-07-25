@@ -39,17 +39,44 @@ public sealed class MemoryCacheStoreExpirationTests
     // ── AbsoluteExpiration placement ─────────────────────────────────────────
 
     [Fact]
-    public void Set_WithoutStaleWindow_PastExpiry_EntryStaysForConditionalRevalidation()
+    public void Set_WithoutStaleWindow_PastExpiry_NoValidator_EntryNotRetained()
     {
         MemoryCacheStore store = CreateStore();
-        // ExpiresAt in the past and no stale window → evictionTtl ≤ 0 → no AbsoluteExpiration set.
-        // Entry must remain so its ETag / Last-Modified can be used for conditional revalidation.
+        // ExpiresAt in the past, no stale window and no validator → the entry can neither be served
+        // (it is already stale) nor revalidated (nothing to condition on), so it must not be retained.
         CacheEntry entry = BuildEntry(expiresAt: DateTimeOffset.UtcNow.AddSeconds(-1));
 
         store.Set("key1", entry);
 
         bool found = store.TryGetValue("key1", out _);
-        found.Should().BeTrue("past-ExpiresAt with no stale window should stay for conditional revalidation (LRU eviction only)");
+        found.Should().BeFalse("an entry that can never be served nor revalidated must not occupy the cache");
+    }
+
+    [Fact]
+    public void Set_WithoutStaleWindow_PastExpiry_WithValidator_RetainedByGrace()
+    {
+        MemoryCacheStore store = CreateStore();
+        // Same as above but with an ETag: the revalidation grace period keeps it available so the next
+        // request can send a conditional If-None-Match instead of a full refetch.
+        CacheEntry entry = BuildEntry(expiresAt: DateTimeOffset.UtcNow.AddSeconds(-1), eTag: "\"v1\"");
+
+        store.Set("key1-validator", entry);
+
+        bool found = store.TryGetValue("key1-validator", out _);
+        found.Should().BeTrue("a validator-carrying entry is retained by RevalidationGraceSeconds for conditional revalidation");
+    }
+
+    [Fact]
+    public void Set_UnusableEntry_RemovesPreviousRepresentation()
+    {
+        MemoryCacheStore store = CreateStore();
+        store.Set("superseded", BuildEntry(expiresAt: DateTimeOffset.UtcNow.AddMinutes(5)));
+
+        // Storing an unusable representation must not silently leave the previous one behind.
+        store.Set("superseded", BuildEntry(expiresAt: DateTimeOffset.UtcNow.AddSeconds(-1)));
+
+        bool found = store.TryGetValue("superseded", out _);
+        found.Should().BeFalse("a superseded representation must not keep being served after an unusable store");
     }
 
     [Fact]
@@ -99,11 +126,11 @@ public sealed class MemoryCacheStoreExpirationTests
     }
 
     [Fact]
-    public void Set_BothStaleWindowsZero_PastExpiry_EntryStaysForConditionalRevalidation()
+    public void Set_BothStaleWindowsZero_PastExpiry_NoValidator_EntryNotRetained()
     {
         MemoryCacheStore store = CreateStore();
-        // Both stale windows are zero and ExpiresAt is in the past → evictionTtl ≤ 0 → no expiration
-        // set on the IMemoryCache entry. Entry must remain for conditional revalidation.
+        // Both stale windows are zero, ExpiresAt is in the past and there is no validator → the entry has
+        // no usable window at all and must not be retained.
         CacheEntry entry = BuildEntry(
             expiresAt: DateTimeOffset.UtcNow.AddSeconds(-1),
             staleIfErrorSeconds: 0,
@@ -112,7 +139,34 @@ public sealed class MemoryCacheStoreExpirationTests
         store.Set("key5", entry);
 
         bool found = store.TryGetValue("key5", out _);
-        found.Should().BeTrue("past-ExpiresAt with no stale windows should stay for conditional revalidation (LRU eviction only)");
+        found.Should().BeFalse("an entry with no freshness, no stale window and no validator must not occupy the cache");
+    }
+
+    [Fact]
+    public void Set_MaxAgeZeroWithoutValidator_NotRetainedEvenWithoutSizeLimit()
+    {
+        // Regression: without MaxCacheSize the IMemoryCache has no SizeLimit and therefore no LRU eviction,
+        // so an entry stored with no expiration would live for the lifetime of the process.
+        MemoryCacheStore store = CreateStore();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        for (int i = 0; i < 100; i++)
+        {
+            store.Set($"max-age-zero-{i}", new CacheEntry
+            {
+                StatusCode = (int)HttpStatusCode.OK,
+                Body = [1, 2, 3],
+                Headers = new Dictionary<string, string[]>(),
+                ExpiresAt = now,
+                StoredAt = now
+            });
+        }
+
+        for (int i = 0; i < 100; i++)
+        {
+            store.TryGetValue($"max-age-zero-{i}", out _)
+                .Should().BeFalse("max-age=0 responses without a validator must not accumulate in memory");
+        }
     }
 
     // ── Revalidation grace (real clock — IMemoryCache evicts on its own clock)
