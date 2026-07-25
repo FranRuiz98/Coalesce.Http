@@ -217,6 +217,19 @@ BenchmarkDotNet v0.15.2 · .NET 10 · Windows 11 · i7-12650H.
 
 ---
 
+## Runnable sample
+
+[`samples/`](samples/) contains a full deployment — origin API, Redis, Polly, Prometheus, Grafana, Jaeger and a k6 load profile — plus a **control group**: a third instance of the same app with the Stampede.Http handlers removed, so the difference is measured rather than asserted.
+
+```bash
+cd samples && docker compose up --build -d
+docker compose logs -f client-a
+```
+
+It narrates itself: a ten-caller stampede, then twelve feature scenarios each verified against the origin's own request counters, then a steady-state loop feeding the dashboards. See the [sample README](samples/README.md).
+
+---
+
 ## Running the tests
 
 ```bash

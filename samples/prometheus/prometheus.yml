@@ -7,10 +7,28 @@ global:
   metric_name_escaping_scheme: underscores
 
 scrape_configs:
+  # The clients expose /metrics on their normal application port — no side-channel
+  # listener, no wildcard-binding gymnastics. The `mode` label is what lets a single
+  # dashboard query compare Stampede.Http instances against the control group.
   - job_name: stampede-http-clients
     static_configs:
-      - targets:
-          - client-a:9464
-          - client-b:9464
+      - targets: ["client-a:8080"]
+        labels:
+          client: client-a
+          mode: stampede
+      - targets: ["client-b:8080"]
+        labels:
+          client: client-b
+          mode: stampede
+      - targets: ["client-baseline:8080"]
+        labels:
+          client: client-baseline
+          mode: baseline
+
+  # The origin counts what actually reached it, tagged with the X-Client header the
+  # clients send. This is the measurement that matters.
+  - job_name: sample-api
+    static_configs:
+      - targets: ["api:8080"]
         labels:
           app: stampede-http-sample

@@ -1,76 +1,208 @@
 # Stampede.Http — real-world sample
 
-A complete, runnable deployment showing **Stampede.Http + Redis + Polly** working together over a real network, with **live metrics in Grafana**:
+A complete, runnable deployment of **Stampede.Http + Redis + Polly**, with metrics, traces, a load generator, and — the part that makes it more than a demo — **a control group**.
+
+Three copies of the same application run the same workload against the same origin. Two have Stampede.Http in their outbound pipeline; one does not. Every claim below is the difference between them, measured at the origin.
 
 ```
-┌──────────┐   ┌─────────────┐
-│ client-a │──►│  Sample API │      client pipeline:
-├──────────┤   │  (Kestrel)  │      CachingMiddleware  ← Redis-backed, shared
-│ client-b │   └─────────────┘        └─ CoalescingHandler  ← per process
-└────┬─────┘                              └─ Polly retry + timeout
-     │                                        └─ HttpClientHandler
-     ▼
-┌──────────┐   ┌────────────┐   ┌─────────┐
-│  Redis   │   │ Prometheus │──►│ Grafana │
-└──────────┘   └─────△──────┘   └─────────┘
-                     │ scrapes /metrics from both clients
+                          ┌──────────────────────────┐
+ client-a        ──┐      │       Sample API         │  client pipeline:
+ client-b        ──┼─────►│        (Kestrel)         │  CachingMiddleware  ← Redis-backed, shared
+ client-baseline ──┘      │  headers only — no       │    └─ CoalescingHandler  ← per process
+     ▲       │            │  Stampede.Http code      │         └─ Polly retry + timeout
+     │       │            └────────────┬─────────────┘              └─ SocketsHttpHandler
+     │       ▼                         │
+  ┌──┴───┐ ┌──────┐          counts every request
+  │  k6  │ │Redis │          that actually arrived
+  └──────┘ └──────┘                    │
+                   ┌───────────┐       │       ┌────────┐
+                   │Prometheus │◄──────┴──────►│ Jaeger │
+                   └─────△─────┘               └────────┘
+                         │ scrapes all three clients + the origin
+                   ┌─────┴─────┐
+                   │  Grafana  │
+                   └───────────┘
 ```
 
-The API declares caching policy purely through standard headers (`Cache-Control`, `ETag`, `Vary`) — there is **zero Stampede.Http code on the server**. The client configures the whole pipeline in one statement:
+The API declares caching policy purely through standard headers (`Cache-Control`, `ETag`, `Vary`, `Last-Modified`) — there is **zero Stampede.Http code on the server**. The client configures the whole pipeline in one place, [`PipelineRegistration.cs`](Stampede.Http.Sample.Client/PipelineRegistration.cs), and nothing else in the app knows the library exists.
 
-```csharp
-services.AddHttpClient("api", c => c.BaseAddress = new Uri(apiBase))
-    .AddStampedeHttp(
-        configureCaching: o => o.DefaultTtl = TimeSpan.FromSeconds(5),
-        configureCoalescing: o => o.CoalescingTimeout = TimeSpan.FromSeconds(10))
-    .UseDistributedCacheStore()                       // Redis via IDistributedCache
-    .AddResilienceHandler("sample-resilience", b =>   // Polly: retries + timeout
-    {
-        b.AddRetry(new HttpRetryStrategyOptions { MaxRetryAttempts = 2, BackoffType = DelayBackoffType.Exponential });
-        b.AddTimeout(TimeSpan.FromSeconds(5));
-    });
-```
+---
 
 ## Run it
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
-
-Requires Docker. Watch the `client-a` / `client-b` logs, then open:
 
 | | URL |
 |---|---|
-| **Grafana dashboard** ("Stampede.Http — Live Metrics", auto-provisioned, no login needed) | http://localhost:3000/d/stampede-http-overview |
+| **Grafana dashboard** (auto-provisioned, no login) | http://localhost:3000/d/stampede-http-overview |
+| **Jaeger traces** | http://localhost:16686 |
 | Prometheus (raw queries, target health under **Status → Targets**) | http://localhost:9090 |
-| client-a's own `/metrics` endpoint | http://localhost:9464/metrics |
-| client-b's own `/metrics` endpoint | http://localhost:9465/metrics |
+| Origin API | http://localhost:5080 |
+| `client-a` — Stampede.Http, runs the feature tour | http://localhost:5081 |
+| `client-b` — Stampede.Http, shares the Redis cache with `client-a` | http://localhost:5082 |
+| `client-baseline` — **control group**, no Stampede.Http | http://localhost:5083 |
 
 > Grafana's anonymous-admin login is a convenience for this local demo only — never do that in a real deployment.
 
-### Without Docker (except Redis)
+Then watch the logs:
 
 ```bash
-docker run -d -p 6379:6379 redis:7-alpine
-dotnet run --project Stampede.Http.Sample.Api   # listens on http://localhost:5080
-dotnet run --project Stampede.Http.Sample.Client
+docker compose logs -f client-a
 ```
 
-(Set `ASPNETCORE_URLS=http://localhost:5080` for the API if your default differs.) The client still exposes Prometheus metrics on `http://localhost:9464/metrics`, but Prometheus/Grafana aren't running outside compose — point your own instance at it, or just read the values in your browser.
+---
 
-## What to watch
+## The first 90 seconds, narrated
 
-| Moment | What it demonstrates |
-|---|---|
-| **Phase 1**: 10 concurrent `GET /slow` (2 s origin latency) finish in ~2 s total | Request coalescing — each instance's burst collapses into one origin call |
-| `client-b`'s Phase 1 is instant if it starts after `client-a`'s | The Redis cache is **shared**: `client-b` hits the entry `client-a` stored |
-| `GET /catalog` shows `Age: Ns` and ~0 ms | Fresh hits served from Redis, no network to the origin |
-| After 10 s, one slow `/catalog` request, then fast again | Expiry → conditional revalidation (`If-None-Match`, 304) |
-| `POST /catalog` line, then next `GET /catalog` refetches with a new version | Unsafe-method invalidation (RFC 9111 §4.4) — shared through Redis, both instances see it |
-| `/flaky` keeps returning **200** while the origin is in its failure window | Polly retries the blips; when the outage persists, `stale-if-error` serves the last good response (look for `[served beyond max-age: stale window or revalidated entry]`) |
-| `/feed` never blocks after the first fetch | `stale-while-revalidate` refreshes in the background |
-| Periodic `stampede_http.*` metrics block in the console logs | The same counters the Grafana dashboard graphs in real time |
-| Grafana's "cache hits vs misses" panel climbing while "coalescing deduplicated" stays flat between bursts | Steady-state traffic is dominated by cache hits; coalescing only fires during the Phase 1 stampede and the periodic origin-refresh moments |
+`client-a` runs a scripted workload in three phases and explains itself as it goes.
+
+### Phase 1 — the stampede
+
+Ten concurrent callers hit `/slow`, an endpoint that takes the origin two seconds.
+
+```
+PHASE 1 — stampede: 10 concurrent GET /slow (the origin takes ~2 s per call)
+  10 callers finished in 2039 ms — 10/10 OK. Coalescing collapsed this instance's
+  burst into a single origin call.
+```
+
+The same burst against `client-baseline` produces twenty origin calls. The smoke test asserts exactly that.
+
+### Phase 2 — the feature tour
+
+Twelve scenarios, each **verified against the origin's own request counters** rather than against the client's opinion of what happened. Real output from a clean run:
+
+```
+[ok] Vary: Accept-Language: 3 languages cold → 3 origin calls; the same 3 again → 0.
+[ok] CoalesceKeyHeaders: X-Tenant-Id: 10 concurrent callers across 2 tenants → 2 origin calls.
+[ok] Client conditional pass-through: If-None-Match against a fresh entry → 304, 0 origin calls.
+[ok] CacheRequestPolicy.ForceRevalidate: origin answered 1 × 304, caller still got 200.
+[ok] CacheRequestPolicy.BypassCache: Fresh entry ignored entirely → 1 origin call.
+[ok] CacheRequestPolicy.NoStore: NoStore then a plain fetch → 2 origin calls: nothing was stored.
+[ok] CoalescingRequestPolicy.BypassCoalescing: 5 concurrent callers → 5 origin calls when
+     bypassing, 1 when coalescing.
+[ok] Cache-Control: only-if-cached: Nothing cached → 504 Gateway Timeout, 0 origin calls.
+[ok] Cache-Control: immutable: cold → 1 origin call; a forced revalidation on top → 0.
+[ok] CacheOptions.MaxBodySizeBytes: ~1.8 MB body fetched twice → 2 origin calls: too large to store.
+[ok] CacheOptions.NormalizeQueryParameters: reordered parameters → 1 origin call.
+[ok] Last-Modified revalidation: expired entry kept for revalidation → 1 × 304 to
+     If-Modified-Since, caller got 200 with no body transferred.
+PHASE 2 — feature tour complete: 12/12 checks behaved as documented
+```
+
+The tour runs on `client-a` only (`Sample:Workload:FeatureTour`): its assertions are deltas on shared origin counters, so a second caller hitting the same endpoints would skew them. Don't run the k6 profile at the same time.
+
+### Phase 3 — steady state
+
+`/catalog` + `/feed` + `/flaky` every two seconds, forever, with a `POST /catalog` every tenth iteration and a burst of **8 concurrent `GET /slow`** every fifth. This is what feeds the dashboards.
+
+The burst is not decoration. The three probes are sequential, so on their own they never put two requests in flight and the coalescer correctly has nothing to do — leaving the coalescing panels at zero and the library's headline feature looking dead. Real inbound traffic overlaps; this models that. In the logs you can watch it alternate:
+
+```
+burst: 8 concurrent GET /slow -> 8 OK in    0 ms (slowest caller)   ← entry fresh, all 8 from cache
+burst: 8 concurrent GET /slow -> 8 OK in 2000 ms (slowest caller)   ← entry expired: 1 origin call, 7 deduplicated
+```
+
+That second line is the cache stampede the library is named for, happening on schedule.
+
+---
+
+## The measurement
+
+`client-baseline` is the same image, the same workload and the same Polly pipeline — with `Sample:Pipeline:Enabled=false`, which removes the two Stampede.Http handlers and nothing else. The origin tags every request it receives with the `X-Client` header the clients send, so the comparison is a single Prometheus query:
+
+```promql
+sum by (client) (rate(sample_api_origin_requests_total[1m]))
+```
+
+The Grafana dashboard's top row turns that into four numbers: origin req/s per Stampede.Http client, origin req/s for the control client, and **origin load avoided** twice — once over all traffic and once with the failing endpoint excluded. All four restrict themselves to the endpoints every client exercises, so the feature tour's extra traffic cannot flatter the result.
+
+### How to read that percentage
+
+The headline reads around **37%**, and on its own it is misleading in both directions. The top row therefore carries **two** figures — *all traffic* and *healthy traffic*, identical selectors but for `/flaky` — so the pair isolates a single variable. Origin request rates from a real 5-minute window:
+
+| Endpoint | `client-a` | `client-b` | `a`+`b` | control | avoided, per client |
+|---|---:|---:|---:|---:|---:|
+| `/catalog` | 0.125 | 0.122 | 0.247 | 0.325 | **62%** |
+| `/feed` | 0.146 | 0.146 | 0.292 | 0.295 | **51%** |
+| `/flaky` | 0.441 | 0.454 | **0.895** | **0.485** | **8%** |
+| `/slow` † | 0.027 | 0.027 | 0.054 | 0.461 | **94%** |
+
+† excluded from the headline — see below.
+
+Expect your own digits to differ by several points: `/flaky` alternates between healthy and failing on a 60-second cycle, which never divides evenly into a 5-minute rate window. The shape is stable; the digits are not.
+
+Which gives, depending on what you include:
+
+| Scenario | avoided |
+|---|---:|
+| All traffic — the headline | **~37%** |
+| Excluding `/flaky` — sequential polling only | **~57%** |
+| Excluding `/flaky`, including the concurrent `/slow` burst | **~73%** |
+| `/slow` alone | **~94%** |
+
+**`/flaky` is not diluting the headline — it is actively penalising it.** It sends more traffic to the origin than the other three endpoints combined, and the cached clients send *more* of it than the control client does. That is not a defect: when the origin returns 503, every client has to ask before `stale-if-error` can rescue it, and Polly then retries twice. **Uncacheable failures scale with replica count; cache hits are shared.** `/flaky` is down for 20 seconds of every 60 — a harsher failure budget than any real dependency.
+
+**The TTLs are deliberately hostile.** For a cache that obeys origin headers, the ceiling is roughly `1 − poll interval / max-age`:
+
+| `max-age` | polled every | ceiling |
+|---|---|---:|
+| 5 s (`/feed`) | ~3 s | ~40–60% |
+| 10 s (`/catalog`) | ~3 s | ~70% |
+| 60 s (a realistic catalogue) | ~3 s | **~95%** |
+
+`/catalog` and `/feed` both land within a few points of it. `max-age=5` exists so expiry and revalidation are visible inside a 90-second demo, not because anything real is declared that way. Raise the numbers in [`CoreEndpoints.cs`](Stampede.Http.Sample.Api/Endpoints/CoreEndpoints.cs), rebuild the `api` service, and every line on the by-endpoint panel moves up.
+
+**The per-client normalisation hides the best result.** The dashboard divides the two clients' load by two to compare like with like. But they share one Redis cache, so they also share the refresh work: read the `a`+`b` column against the control column and **two instances cost the origin less than one uncached instance** on every cacheable endpoint. Excluding `/flaky`, the two replicas together generate 0.593 req/s against the control client's 1.081 — **45% less origin load from twice the application capacity**. On `/flaky`, for the reason above, the opposite holds.
+
+**And `/slow` is left out on purpose.** It is the one endpoint the steady state hits with 8 concurrent callers, so it is where coalescing rather than caching does the work — a 94% saving. Keeping it out of the headline is what makes ~37% a floor rather than a figure flattered by picking favourable traffic. The **Deduplicated requests** panel shows the same event from the client's side: flat while the entry is warm, spiking to ~7 the moment it expires.
+
+None of this is latency, either:
+
+```
+✓ { mode:stampede }...: avg=12.57ms  med=752µs  p(95)=1.37ms
+```
+
+against an origin that takes 300 ms to 2 s per call.
+
+---
+
+## What demonstrates what
+
+| Endpoint | Headers it sets | What it shows |
+|---|---|---|
+| `/catalog` | `max-age=10, stale-if-error=60` + `ETag` | Fresh hits → conditional revalidation → `POST` invalidation (RFC 9111 §4.4), shared through Redis |
+| `/feed` | `max-age=5, stale-while-revalidate=30` | Never blocks after the first fetch; refreshes in the background (RFC 5861 §3) |
+| `/flaky` | `max-age=5, stale-if-error=120` | 503s for the first 20 s of every minute. Polly retries the blips; stale-if-error covers the rest (RFC 5861 §4) |
+| `/slow` | `max-age=30` | 2 s of origin latency — the stampede showcase |
+| `/ledger` | `max-age=10, must-revalidate` + `ETag` | Once stale it may **not** be served without checking the origin — contrast with `/flaky` |
+| `/docs/{id}` | `max-age=5` + `Last-Modified` | `If-Modified-Since` revalidation, and `RevalidationGraceSeconds` keeping the entry alive to make it possible |
+| `/greetings` | `max-age=30` + `Vary: Accept-Language` | One URL, one cache entry per language (RFC 9111 §4.1) |
+| `/tenants/data` | `max-age=20` + `Vary: X-Tenant-Id` | Multi-tenancy: `Vary` on the server, `CoalesceKeyHeaders` on the client |
+| `/assets/{id}` | `max-age=31536000, immutable` | Fresh immutable entries skip revalidation even when asked (RFC 8246) |
+| `/bulk` | `max-age=300`, ~1.8 MB body | Perfectly cacheable and still declined: `MaxBodySizeBytes` |
+| `/search` | `max-age=60` | `NormalizeQueryParameters` folding reordered query strings onto one entry |
+| `/stats` | `no-store` | Live origin counters — the source of truth for every assertion here |
+
+---
+
+## Drive it yourself
+
+### By hand
+
+[`samples.http`](samples.http) is a request collection for the VS Code REST Client, Visual Studio, or the JetBrains HTTP Client. It hits the Stampede.Http client and the control client side by side, with `/stats` calls in between so you can watch the origin counters move — or fail to.
+
+### Under load
+
+```bash
+docker compose --profile load up k6
+```
+
+[`load/stampede.js`](load/stampede.js) runs two identical arrival patterns — 40 VUs each, ramp / hold / drain — one against `client-a`, one against `client-baseline`, and prints the origin's counters at the end. The stampede then comes from real concurrent inbound HTTP rather than a scripted `Task.WhenAll`, which is why the client is a real ASP.NET Core service rather than a console loop.
+
+To let k6 be the only traffic, set `Sample__Workload__Enabled=false` on the clients first.
 
 ### The outage drill
 
@@ -78,30 +210,81 @@ dotnet run --project Stampede.Http.Sample.Client
 docker compose stop api
 ```
 
-The clients keep receiving **200 OK** for `/catalog` and `/flaky` (stale-if-error window) instead of connection errors. Then:
+The Stampede.Http clients keep answering **200 OK** for `/catalog` and `/flaky` out of the stale-if-error window. `client-baseline` starts returning connection errors immediately. Then:
 
 ```bash
 docker compose start api
 ```
 
-and watch them transparently return to fresh responses.
+and watch them return to fresh responses with no intervention.
 
-### Origin's point of view
+---
+
+## Observability
+
+### Metrics
+
+Every `stampede_http.*` instrument (the same ones in the [main README](../README.md#metrics)) is exported on each client's ordinary application port at `/metrics`, scraped every 5 seconds. The origin exports `sample_api.origin.requests`, tagged by endpoint, client and status.
+
+The dashboard is grouped into three sections: **Origin load** (the comparison), **Caching** (hits, misses, stale serving, revalidations, invalidations) and **Coalescing** (deduplication rate, in-flight calls, timeouts) — most panels broken down per client.
+
+> **Naming caveat:** Prometheus 3.x negotiates UTF-8 metric names with targets that support it, which the OTel exporter does. `prometheus.yml` sets `metric_name_escaping_scheme: underscores` globally so names stay in the classic form (`stampede_http_cache_hits_requests_total`) that the dashboard queries and this README use.
+
+### Traces
+
+Both the clients and the origin export OTLP traces to Jaeger. Search for the `sample-client` service and open a request that arrived during a burst: the coalesced call shows up as **one** outgoing HTTP span serving many inbound ones. That is the thing a counter cannot show you.
+
+### Runtime reconfiguration
+
+[`config/client.json`](config/client.json) is bind-mounted into every client and read with `reloadOnChange`. Edit `Stampede:Cache:DefaultTtl` while the stack is running, then:
 
 ```bash
-curl http://localhost:5080/stats
+curl http://localhost:5081/api/config
 ```
 
-`no-store` live counters: how many requests actually reached the origin — across *all* client instances. Compare it with how many requests the clients have issued.
+The new value is live — no restart, no redeploy. That is `IOptionsMonitor` working through Stampede.Http's named options, keyed by the `HttpClient` name. Structural options (`MaxCacheSize`, `NormalizeQueryParameters`, `RevalidationGraceSeconds`) are read once at registration and deliberately do not move.
 
-## Live metrics: Prometheus + Grafana
+> The compose file sets `DOTNET_USE_POLLING_FILE_WATCHER=true`: inotify events do not cross a Docker bind mount on Windows or macOS, so the file watcher would otherwise never fire.
 
-Every `stampede_http.*` instrument (the same ones described in the [main README](../README.md#metrics)) is exported by each client via `OpenTelemetry.Exporter.Prometheus.HttpListener` on port `9464`, scraped by Prometheus every 5 seconds, and graphed by a pre-provisioned Grafana dashboard — no manual data source or dashboard setup required.
+### Other introspection endpoints
 
-The dashboard has 10 panels: cache hits/misses/hit-ratio, coalescing deduplication (rate) and in-flight count, stale-if-error and stale-while-revalidate rates, revalidations and invalidations, and coalescing timeouts — each broken down **per client instance** so you can watch `client-a` and `client-b` side by side. That per-instance split is exactly what makes the earlier nuance visible: cache-hit panels for both instances rise together (shared Redis), while coalescing panels move independently (per-process).
+| Endpoint | What it returns |
+|---|---|
+| `GET /api/config` | The options actually in effect on this instance right now |
+| `GET /api/counters` | This process's `stampede_http.*` instrument totals, as JSON |
+| `GET /api/origin-stats` | The origin's counters, straight from the origin |
+| `GET /metrics` | The same instruments in Prometheus exposition format |
 
-> **Naming caveat:** Prometheus 3.x negotiates UTF-8 metric names (e.g. `stampede_http.cache.hits_requests_total`, dots preserved) with targets that support it, which the OTel exporter does. `prometheus.yml` sets `metric_name_escaping_scheme: underscores` globally so names stay in the classic Prometheus form (`stampede_http_cache_hits_requests_total`) that the dashboard queries and this README use.
+---
 
-## One nuance worth knowing
+## Without Docker
 
-The **cache** (Redis) is shared across instances, but **coalescing is per process**: if both replicas miss the same key at the same instant, each makes its own origin call (2 total, not 1 — still not 20). Cross-instance request deduplication would require a distributed lock, which is out of scope for an HTTP client library.
+```bash
+docker run -d -p 6379:6379 redis:7-alpine     # or set Sample:Pipeline:UseRedis=false
+
+dotnet run --project Stampede.Http.Sample.Api        # http://localhost:5080
+dotnet run --project Stampede.Http.Sample.Client     # http://localhost:5081
+```
+
+`launchSettings.json` also carries a **client (baseline, no Stampede.Http)** profile on port 5082 so you can run the comparison locally. Prometheus, Grafana and Jaeger aren't running outside compose; the clients still serve `/metrics`, and traces are simply not exported when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset.
+
+---
+
+## Automated verification
+
+```bash
+./scripts/smoke-test.sh          # add KEEP_STACK=1 to leave the stack up afterwards
+```
+
+Brings the whole stack up and asserts the behaviour this README claims, using the origin's counters as the source of truth: the feature tour reports 12/12, a 20-caller burst costs at most one origin call, the same burst against the control client costs twenty, `Vary` keeps one entry per representation, and the instruments really are exported.
+
+This runs in CI on every push, and the sample projects are part of `Stampede.Http.slnx`, so neither the code nor the deployment can rot silently.
+
+---
+
+## What this sample does not claim
+
+- **Coalescing is per process.** The Redis cache is shared, but if both replicas miss the same key at the same instant, each makes its own origin call — 2, not 1, and still not 20. Cross-instance deduplication would need a distributed lock, which is out of scope for an HTTP client library. The dashboard makes this visible: cache-hit panels for `client-a` and `client-b` rise together; coalescing panels move independently.
+- **The headline percentage is a property of the workload, not of the library.** It is bounded by `1 − interval / max-age`, and this sample deliberately runs 5–10 second TTLs against a 2-second poll so that expiry is visible in a short demo. Read [How to read that percentage](#how-to-read-that-percentage) before quoting the number anywhere, and model your own TTLs first.
+- **Failures are not cacheable.** `stale-if-error` rescues the caller *after* the origin has failed; the request still goes out, and Polly retries it. Most of the origin traffic Stampede.Http cannot avoid in this sample is `/flaky` returning 503 — and unlike cacheable traffic, that cost scales with the number of replicas rather than being shared.
+- **The origin is a toy.** It fabricates latency with `Task.Delay` and keeps its state in memory. Its job is to emit realistic headers, not to be a realistic service.

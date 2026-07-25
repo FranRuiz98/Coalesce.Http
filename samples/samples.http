@@ -1,0 +1,123 @@
+### Stampede.Http sample — hands-on request collection
+#
+# Works with the VS Code REST Client, Visual Studio's .http editor and JetBrains
+# HTTP Client. Start the stack first:
+#
+#     docker compose up --build -d
+#
+# @origin  is the sample API: no Stampede.Http anywhere, it only sets headers.
+# @client  is the app with Stampede.Http in its outbound pipeline.
+# @control is the identical app without it — send the same request to both and
+#          compare what the origin's counters do.
+
+@origin  = http://localhost:5080
+@client  = http://localhost:5081
+@control = http://localhost:5083
+
+
+### ─── The origin's own view ────────────────────────────────────────────────
+### Live counters of what actually reached the origin. Re-read this between any
+### two requests below to see whether they cost an origin call.
+GET {{origin}}/stats
+
+### Reset the counters so you can measure a clean window.
+POST {{origin}}/stats/reset
+
+
+### ─── Freshness and revalidation ───────────────────────────────────────────
+### First call is a miss (~300 ms). Repeat within 10 s: instant, with an Age header.
+GET {{client}}/api/catalog
+
+### After 10 s the entry is stale but retained (RevalidationGraceSeconds), so this
+### expiry is settled with If-None-Match → 304, no body transferred. Watch
+### "GET /catalog -> 304" climb in /stats.
+GET {{client}}/api/catalog
+
+### Mutate. The 2xx response evicts the cached GET entry (RFC 9111 §4.4) — and
+### because the store is Redis, it is evicted for client-b too.
+POST {{client}}/api/catalog
+
+### ...so this one refetches and comes back with a new version.
+GET {{client}}/api/catalog
+
+
+### ─── Stale extensions (RFC 5861) ──────────────────────────────────────────
+### stale-while-revalidate: never blocks after the first fetch. The generation
+### number moves in the background while you keep getting instant responses.
+GET {{client}}/api/feed
+
+### stale-if-error: /flaky returns 503 for the first 20 s of every minute. Polly
+### retries the blips; when the outage outlasts the retries the cache serves the
+### last good 200. Try it repeatedly across a minute boundary.
+GET {{client}}/api/flaky
+
+### must-revalidate: once stale this entry may NOT be served without checking the
+### origin, even under failure. Contrast with /api/flaky above.
+GET {{client}}/api/ledger
+
+
+### ─── Coalescing ───────────────────────────────────────────────────────────
+### The origin takes 2 s. Fire this several times at once (in separate editor
+### tabs, or with the k6 profile) — one origin call serves all of them.
+GET {{client}}/api/slow
+
+### Same request against the control instance: every caller pays the full 2 s and
+### the origin sees every one of them.
+GET {{control}}/api/slow
+
+
+### ─── Vary: one URL, many representations ──────────────────────────────────
+GET {{client}}/api/greetings?lang=en-GB
+
+### A different language is a different cache entry, not an overwrite.
+GET {{client}}/api/greetings?lang=es-ES
+
+### And a third.
+GET {{client}}/api/greetings?lang=fr-FR
+
+
+### ─── Multi-tenancy: Vary + CoalesceKeyHeaders ─────────────────────────────
+### X-Tenant-Id is a Vary field at the origin and a coalescing key on the client,
+### so concurrent bursts stay separated per tenant. The origin takes 1 s.
+GET {{client}}/api/tenants/acme
+
+###
+GET {{client}}/api/tenants/globex
+
+
+### ─── Immutable, size ceiling, query normalization ─────────────────────────
+### Cache-Control: immutable — cached for a year and never revalidated.
+GET {{client}}/api/assets/logo-v3
+
+### ~1.8 MB with a perfectly good max-age, and still never stored: it exceeds
+### CacheOptions.MaxBodySizeBytes. Every call reaches the origin.
+GET {{client}}/api/bulk
+
+### These two are the same cache entry (NormalizeQueryParameters = true) —
+### only the first costs an origin call.
+GET {{client}}/api/search?alpha=1&beta=2
+
+###
+GET {{client}}/api/search?beta=2&alpha=1
+
+
+### ─── Last-Modified rather than ETag ───────────────────────────────────────
+### max-age=5. Call it, wait six seconds, call it again: the expiry is settled
+### with If-Modified-Since → 304.
+GET {{client}}/api/docs/handbook
+
+
+### ─── Introspection ────────────────────────────────────────────────────────
+### Effective options right now. Edit samples/config/client.json (for example set
+### Stampede:Cache:DefaultTtl to "00:00:30") and re-run this: the value changes
+### with no restart. Structural options will not move — that is by design.
+GET {{client}}/api/config
+
+### This process's stampede_http.* instrument totals, as JSON.
+GET {{client}}/api/counters
+
+### The same instruments in Prometheus exposition format.
+GET {{client}}/metrics
+
+### And the origin's.
+GET {{origin}}/metrics

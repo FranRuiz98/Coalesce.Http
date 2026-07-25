@@ -6,7 +6,13 @@ COPY Stampede.Http/ Stampede.Http/
 COPY samples/Stampede.Http.Sample.Client/ samples/Stampede.Http.Sample.Client/
 RUN dotnet publish samples/Stampede.Http.Sample.Client -c Release -o /app
 
-FROM mcr.microsoft.com/dotnet/runtime:10.0
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+# curl is here only so docker compose can run a real HTTP healthcheck against /healthz.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app .
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
 ENTRYPOINT ["dotnet", "Stampede.Http.Sample.Client.dll"]

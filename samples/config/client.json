@@ -1,0 +1,23 @@
+{
+  // This file is bind-mounted into every client container and read with reloadOnChange.
+  // Edit it while the stack is running, then hit http://localhost:5081/api/config:
+  // the new values are live, with no restart and no redeploy. That is IOptionsMonitor
+  // working through Stampede.Http's named options, keyed by the HttpClient name.
+  //
+  // Runtime-tuneable:  DefaultTtl, MaxBodySizeBytes, DefaultStaleIfErrorSeconds,
+  //                    DefaultStaleWhileRevalidateSeconds, Coalescing.Enabled,
+  //                    Coalescing.CoalescingTimeout, Coalescing.MaxResponseBodyBytes
+  // Read once at startup (structural): MaxCacheSize, NormalizeQueryParameters,
+  //                    RevalidationGraceSeconds
+  "Stampede": {
+    "Cache": {
+      "DefaultTtl": "00:00:05",
+      "DefaultStaleIfErrorSeconds": 0,
+      "DefaultStaleWhileRevalidateSeconds": 0
+    },
+    "Coalescing": {
+      "Enabled": true,
+      "CoalescingTimeout": "00:00:10"
+    }
+  }
+}
