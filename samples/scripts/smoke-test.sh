@@ -32,6 +32,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Poll a condition until it holds or the budget runs out.
+#
+# Metric endpoints do not become correct at the instant a container reports healthy:
+# an OpenTelemetry counter emits nothing until it has recorded its first measurement,
+# and the exporter caches scrape responses briefly. Asserting on that with a single
+# request is a race, and it is the race that first broke this script in CI.
+retry_until() {
+  local deadline=$((SECONDS + $1)); shift
+  while ! "$@"; do
+    if (( SECONDS >= deadline )); then
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+# Whether an endpoint's body contains a pattern. Used as the predicate for retry_until.
+body_contains() {
+  curl -fsS "$1" 2>/dev/null | grep -q "$2"
+}
+
+# Whether Prometheus reports the origin's scrape target as up.
+prometheus_origin_target_up() {
+  curl -fsS --get "http://localhost:9090/api/v1/query" \
+    --data-urlencode 'query=up{job="sample-api"}' 2>/dev/null \
+    | grep -q '"value":\[[0-9.]*,"1"\]'
+}
+
 # Value of a numeric JSON property, 0 when absent. The keys here contain spaces and
 # slashes but never quotes or nesting, so grep is enough — and keeps this script
 # dependent on nothing but curl.
@@ -122,26 +150,37 @@ fi
 
 # ---------------------------------------------------------------------------
 log "5. The instruments are exported for Prometheus"
-if curl -fsS "$CLIENT/metrics" | grep -q "stampede_http"; then
+if retry_until 60 body_contains "$CLIENT/metrics" "stampede_http"; then
   pass "client exposes stampede_http.* on /metrics"
 else
-  fail "no stampede_http instruments on $CLIENT/metrics"
+  fail "no stampede_http instruments on $CLIENT/metrics after 60 s"
+  printf '       what it returned instead:\n'
+  curl -fsS "$CLIENT/metrics" 2>&1 | head -5 | sed 's/^/       /'
 fi
 
-if curl -fsS "$ORIGIN/metrics" | grep -q "sample_api_origin_requests"; then
+if retry_until 60 body_contains "$ORIGIN/metrics" "sample_api_origin_requests"; then
   pass "origin exposes its request counter on /metrics"
 else
-  fail "no origin request counter on $ORIGIN/metrics"
+  fail "no origin request counter on $ORIGIN/metrics after 60 s"
+  printf '       what it returned instead:\n'
+  curl -fsS "$ORIGIN/metrics" 2>&1 | head -5 | sed 's/^/       /'
 fi
 
-if curl -fsS "http://localhost:9090/api/v1/query?query=up" | grep -q '"status":"success"'; then
-  pass "Prometheus is scraping"
+# Stronger than "Prometheus answers queries": assert the origin target is actually up,
+# which is what the dashboards depend on. Prometheus scrapes every 5 s, so give it room
+# to have completed a first round.
+if retry_until 60 prometheus_origin_target_up; then
+  pass "Prometheus is scraping the origin"
 else
-  fail "Prometheus is not answering queries"
+  fail "Prometheus has no healthy sample-api target after 60 s"
+  printf '       target health:\n'
+  curl -fsS "http://localhost:9090/api/v1/targets?state=active" 2>&1 \
+    | tr ',' '\n' | grep -E '"(scrapeUrl|health|lastError)"' | sed 's/^/       /' | head -20
 fi
 
 # ---------------------------------------------------------------------------
 log "6. The cache is actually being hit"
+retry_until 60 body_contains "$CLIENT/api/counters" '"stampede_http.cache.hits"' || true
 hits=$(json_number "$CLIENT/api/counters" "stampede_http.cache.hits")
 if (( hits > 0 )); then
   pass "client-a served $hits requests from cache"
