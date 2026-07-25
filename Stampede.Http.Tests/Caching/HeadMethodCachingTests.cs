@@ -78,6 +78,61 @@ public sealed class HeadMethodCachingTests
     }
 
     [Fact]
+    public async Task Head_FromCache_PreservesContentHeaders()
+    {
+        (CachingMiddleware middleware, _) = BuildPipeline(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("body text", System.Text.Encoding.UTF8, "application/json")
+            });
+
+        HttpMessageInvoker invoker = Invoker(middleware);
+        const string url = "https://api.test/head/content-headers";
+
+        HttpResponseMessage getResponse = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, url), CancellationToken.None);
+        HttpResponseMessage headResponse = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Head, url), CancellationToken.None);
+
+        // RFC 9110 §9.3.2 — HEAD repeats the header fields the equivalent GET would have sent
+        headResponse.Content.Headers.ContentType?.MediaType.Should().Be("application/json",
+            "a cached HEAD must repeat the Content-Type the equivalent GET would have sent");
+        headResponse.Content.Headers.ContentLength.Should().Be(getResponse.Content.Headers.ContentLength,
+            "a cached HEAD must report the same Content-Length as the equivalent GET");
+    }
+
+    [Fact]
+    public async Task Head_AfterRevalidation_PreservesContentHeaders()
+    {
+        int callCount = 0;
+        (CachingMiddleware middleware, _) = BuildPipeline(_ =>
+        {
+            callCount++;
+            if (callCount == 1)
+            {
+                HttpResponseMessage r = new(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("data", System.Text.Encoding.UTF8, "application/json")
+                };
+                r.Headers.ETag = new EntityTagHeaderValue("\"v1\"");
+                r.Headers.CacheControl = new CacheControlHeaderValue { MaxAge = TimeSpan.Zero };
+                return r;
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotModified);
+        });
+
+        HttpMessageInvoker invoker = Invoker(middleware);
+        const string url = "https://api.test/head/reval-content-headers";
+
+        _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, url), CancellationToken.None);
+        HttpResponseMessage headResponse = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Head, url), CancellationToken.None);
+
+        headResponse.Content.Headers.ContentType?.MediaType.Should().Be("application/json",
+            "a HEAD refreshed by a 304 must still repeat the stored Content-Type");
+        byte[] body = await headResponse.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken);
+        body.Should().BeEmpty("HEAD response body must be empty even after revalidation");
+    }
+
+    [Fact]
     public async Task Head_FromCache_AgeHeaderPresent()
     {
         (CachingMiddleware middleware, _) = BuildPipeline(_ =>

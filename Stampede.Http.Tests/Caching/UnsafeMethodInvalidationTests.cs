@@ -269,7 +269,98 @@ public sealed class UnsafeMethodInvalidationTests
         usersCalls.Should().Be(1, "/users should still be served from cache");
     }
 
+    // ── Invalidation issues no redundant reads ───────────────────────────────
+
+    [Fact]
+    public async Task Invalidation_DoesNotReadTheEntryBeforeRemovingIt()
+    {
+        // Probing with a read before removing only served to make the log/metric count confirmed
+        // deletions, at the cost of fetching the whole stored body over the network on a distributed
+        // store. Removal is idempotent, so the read must not happen.
+        CountingCacheStore counting = new(new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions())));
+        StubHandler stub = new(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") });
+        CachingMiddleware middleware = new(counting, _keyBuilder, _options) { InnerHandler = stub };
+        HttpMessageInvoker invoker = new(middleware);
+
+        _ = await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://api.test/probe"), CancellationToken.None);
+
+        counting.Reset();
+
+        HttpRequestMessage post = new(HttpMethod.Post, "https://api.test/probe")
+        {
+            Content = new StringContent("payload")
+        };
+        _ = await invoker.SendAsync(post, CancellationToken.None);
+
+        counting.Removes.Should().Be(1, "the effective request URI must be invalidated");
+        counting.Gets.Should().Be(0, "invalidation must not read the entry it is about to remove");
+    }
+
+    [Fact]
+    public async Task Invalidation_WithLocationAndContentLocation_IssuesOneRemovePerUri()
+    {
+        CountingCacheStore counting = new(new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions())));
+        StubHandler stub = new(req =>
+        {
+            if (req.Method == HttpMethod.Get)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+            }
+
+            HttpResponseMessage created = new(HttpStatusCode.Created)
+            {
+                Content = new StringContent("created")
+            };
+            created.Headers.Location = new Uri("https://api.test/items/42");
+            created.Content.Headers.ContentLocation = new Uri("https://api.test/items/canonical");
+            return created;
+        });
+        CachingMiddleware middleware = new(counting, _keyBuilder, _options) { InnerHandler = stub };
+        HttpMessageInvoker invoker = new(middleware);
+
+        counting.Reset();
+
+        HttpRequestMessage post = new(HttpMethod.Post, "https://api.test/items")
+        {
+            Content = new StringContent("payload")
+        };
+        _ = await invoker.SendAsync(post, CancellationToken.None);
+
+        counting.Removes.Should().Be(3, "effective request URI, Location and Content-Location are each invalidated once");
+        counting.Gets.Should().Be(0, "invalidation must not read the entries it is about to remove");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>Counts the store operations issued by the middleware.</summary>
+    private sealed class CountingCacheStore(ICacheStore inner) : ICacheStore
+    {
+        private int _gets;
+        private int _removes;
+
+        public int Gets => Volatile.Read(ref _gets);
+        public int Removes => Volatile.Read(ref _removes);
+
+        public void Reset()
+        {
+            Volatile.Write(ref _gets, 0);
+            Volatile.Write(ref _removes, 0);
+        }
+
+        public bool TryGetValue(string key, out CacheEntry? entry)
+        {
+            _ = Interlocked.Increment(ref _gets);
+            return inner.TryGetValue(key, out entry);
+        }
+
+        public void Set(string key, CacheEntry entry) => inner.Set(key, entry);
+
+        public void Remove(string key)
+        {
+            _ = Interlocked.Increment(ref _removes);
+            inner.Remove(key);
+        }
+    }
 
     private CachingMiddleware BuildMiddleware(Func<HttpRequestMessage, HttpResponseMessage> handler)
     {

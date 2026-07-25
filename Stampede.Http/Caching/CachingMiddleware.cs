@@ -1,9 +1,9 @@
-﻿using Stampede.Http.Metrics;
+﻿using Stampede.Http.Internal;
+using Stampede.Http.Metrics;
 using Stampede.Http.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -14,6 +14,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                                         ICacheKeyBuilder keyBuilder,
                                         IOptionsMonitor<CacheOptions> optionsMonitor,
                                         string clientName,
+                                        BackgroundRevalidationCoordinator backgroundRevalidations,
                                         StampedeHttpMetrics? metrics = null,
                                         ILogger<CachingMiddleware>? logger = null,
                                         TimeProvider? timeProvider = null) : DelegatingHandler
@@ -22,16 +23,17 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
     private readonly ILogger logger = logger ?? NullLogger<CachingMiddleware>.Instance;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
-    private readonly ConcurrentDictionary<string, Task> _backgroundRevalidations = new(StringComparer.Ordinal);
 
     private CacheOptions Options => optionsMonitor.Get(clientName);
 
     /// <summary>
-    /// Convenience constructor for testing — wraps a static options instance.
+    /// Convenience constructor for testing — wraps a static options instance and gives this handler its own
+    /// background-revalidation scope.
     /// </summary>
     internal CachingMiddleware(ICacheStore cache, ICacheKeyBuilder keyBuilder, CacheOptions options,
         StampedeHttpMetrics? metrics = null, ILogger<CachingMiddleware>? logger = null, TimeProvider? timeProvider = null)
-        : this(cache, keyBuilder, new StaticOptionsMonitor<CacheOptions>(options), string.Empty, metrics, logger, timeProvider) { }
+        : this(cache, keyBuilder, new StaticOptionsMonitor<CacheOptions>(options), string.Empty,
+               new BackgroundRevalidationCoordinator(), metrics, logger, timeProvider) { }
 
     /// <summary>
     /// Determines whether the specified HTTP request is eligible for caching based on its method, headers, and content.
@@ -114,13 +116,18 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// </summary>
     /// <param name="entry">The cache entry containing the status code, response body, and headers to be used for constructing the HTTP
     /// response.</param>
+    /// <param name="includeBody">
+    /// When <see langword="false"/>, the stored header fields are replayed over an empty body. Used for HEAD, which
+    /// repeats the header fields the equivalent GET would have sent — including <c>Content-Type</c> and
+    /// <c>Content-Length</c> — but carries no content (RFC 9110 §9.3.2).
+    /// </param>
     /// <returns>An instance of HttpResponseMessage populated with the status code, body, and headers from the provided cache
     /// entry.</returns>
-    private HttpResponseMessage CreateResponse(CacheEntry entry)
+    private HttpResponseMessage CreateResponse(CacheEntry entry, bool includeBody = true)
     {
         HttpResponseMessage response = new((HttpStatusCode)entry.StatusCode)
         {
-            Content = new ByteArrayContent(entry.Body)
+            Content = new ByteArrayContent(includeBody ? entry.Body : [])
         };
 
         foreach (KeyValuePair<string, string[]> header in entry.Headers)
@@ -129,6 +136,14 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             {
                 response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
+        }
+
+        if (!includeBody)
+        {
+            // RFC 9110 §9.3.2 — the HEAD response reports the content length the equivalent GET would have sent.
+            // Set it from the stored body rather than relying on a stored Content-Length header: HttpContentHeaders
+            // computes that value lazily and does not enumerate it, so it is often absent from the entry.
+            response.Content.Headers.ContentLength = entry.Body.Length;
         }
 
         // §5.1 — Age: elapsed seconds since the response was stored
@@ -153,24 +168,49 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return;
         }
 
+        long maxBodySizeBytes = Options.MaxBodySizeBytes;
+
+        // Skip oversized responses before touching the body. Buffering one only to discard it would allocate
+        // the whole payload — and would also consume a live network stream that the caller still has to read.
+        if (response.Content.Headers.ContentLength is long declaredLength && declaredLength > maxBodySizeBytes)
+        {
+            LogBodyTooLarge(key, declaredLength, maxBodySizeBytes);
+            return;
+        }
+
         // Capture Last-Modified before replacing Content, since ByteArrayContent has no content headers.
         DateTimeOffset? capturedLastModified = response.Content.Headers.LastModified;
 
-        // Capture all content headers before replacing Content so they survive the swap.
-        List<KeyValuePair<string, IEnumerable<string>>> contentHeaders = [.. response.Content.Headers];
+        byte[] body;
 
-        byte[] body = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-
-        response.Content = new ByteArrayContent(body);
-
-        // Restore original content headers (Content-Type, Content-Encoding, etc.)
-        foreach (KeyValuePair<string, IEnumerable<string>> header in contentHeaders)
+        if (response.Content is BufferedByteArrayContent buffered)
         {
-            response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            // Already materialised by the coalescer (or an inner cache layer): reuse the array rather than
+            // copying it out and rebuffering into a second ByteArrayContent. Under a stampede every waiter
+            // reaches this path, so the saving is one full body copy per coalesced caller.
+            body = buffered.Buffer;
+        }
+        else
+        {
+            // Capture all content headers before replacing Content so they survive the swap.
+            List<KeyValuePair<string, IEnumerable<string>>> contentHeaders = [.. response.Content.Headers];
+
+            body = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+
+            // Reading consumed the original stream, so hand the caller a replayable copy.
+            response.Content = new BufferedByteArrayContent(body);
+
+            // Restore original content headers (Content-Type, Content-Encoding, etc.)
+            foreach (KeyValuePair<string, IEnumerable<string>> header in contentHeaders)
+            {
+                response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
         }
 
-        if (body.Length > Options.MaxBodySizeBytes)
+        // Chunked responses carry no Content-Length, so the limit can only be enforced after the read.
+        if (body.Length > maxBodySizeBytes)
         {
+            LogBodyTooLarge(key, body.Length, maxBodySizeBytes);
             return;
         }
 
@@ -235,8 +275,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return;
         }
 
-        string variantKey = BuildVariantKey(primaryKey, entry.VaryFields,
-            field => entry.VaryValues.TryGetValue(field, out string[]? values) ? values : []);
+        string variantKey = BuildVariantKey(primaryKey, entry.VaryFields, entry.VaryValues);
 
         await cache.SetAsync(variantKey, entry, ct).ConfigureAwait(false);
         await cache.SetAsync(primaryKey, CreateVaryMarker(entry), ct).ConfigureAwait(false);
@@ -262,42 +301,95 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return null;
         }
 
-        string variantKey = BuildVariantKey(primaryKey, entry.VaryFields,
-            field => request.Headers.TryGetValues(field, out IEnumerable<string>? values) ? [.. values] : []);
+        string variantKey = BuildVariantKey(primaryKey, entry.VaryFields, request);
 
         return await cache.GetAsync(variantKey, ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Builds a Vary secondary cache key by appending the request's normalized values for each Vary field to the
-    /// primary key (RFC 9111 §4.1). Field names are sorted case-insensitively and values are lower-cased so the
-    /// key agrees with the case-insensitive comparison performed by <see cref="VaryMatches"/>.
+    /// Builds a Vary secondary cache key from the values <paramref name="request"/> carries for each Vary
+    /// field (RFC 9111 §4.1). Used on the read path, where the field names come from the stored marker.
     /// </summary>
-    private static string BuildVariantKey(string primaryKey, string[] varyFields, Func<string, string[]> getValues)
+    private static string BuildVariantKey(string primaryKey, string[] normalizedFields, HttpRequestMessage request)
     {
-        string[] fields = [.. varyFields];
-        Array.Sort(fields, StringComparer.OrdinalIgnoreCase);
+        StringBuilder sb = StartVariantKey(primaryKey);
 
-        StringBuilder sb = new(primaryKey.Length + 32);
-        sb.Append(primaryKey);
-
-        foreach (string field in fields)
+        foreach (string field in normalizedFields)
         {
-            sb.Append(VariantKeySeparator).Append(field.ToLowerInvariant()).Append('=');
+            sb.Append(VariantKeySeparator).Append(field).Append('=');
 
-            string[] values = getValues(field);
-            for (int i = 0; i < values.Length; i++)
+            if (request.Headers.TryGetValues(field, out IEnumerable<string>? values))
             {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append(values[i].ToLowerInvariant());
+                AppendValues(sb, values);
             }
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Builds a Vary secondary cache key from the request values captured when the entry was stored
+    /// (RFC 9111 §4.1). Used on the write path.
+    /// </summary>
+    private static string BuildVariantKey(string primaryKey, string[] normalizedFields, IReadOnlyDictionary<string, string[]> varyValues)
+    {
+        StringBuilder sb = StartVariantKey(primaryKey);
+
+        foreach (string field in normalizedFields)
+        {
+            sb.Append(VariantKeySeparator).Append(field).Append('=');
+
+            if (varyValues.TryGetValue(field, out string[]? values))
+            {
+                AppendValues(sb, values);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static StringBuilder StartVariantKey(string primaryKey)
+    {
+        return new StringBuilder(primaryKey.Length + 32).Append(primaryKey);
+    }
+
+    /// <summary>
+    /// Appends a comma-separated, lower-cased rendering of <paramref name="values"/> so the key agrees with the
+    /// case-insensitive comparison performed by <see cref="VaryMatches"/>.
+    /// </summary>
+    private static void AppendValues(StringBuilder sb, IEnumerable<string> values)
+    {
+        bool first = true;
+
+        foreach (string value in values)
+        {
+            if (!first)
+            {
+                sb.Append(',');
+            }
+
+            AppendLowerInvariant(sb, value);
+            first = false;
+        }
+    }
+
+    /// <summary>
+    /// Appends <paramref name="value"/> in lower case without allocating an intermediate string. Header values
+    /// are short, so the common case folds through the stack.
+    /// </summary>
+    private static void AppendLowerInvariant(StringBuilder sb, string value)
+    {
+        const int StackAllocThreshold = 256;
+
+        if (value.Length > StackAllocThreshold)
+        {
+            _ = sb.Append(value.ToLowerInvariant());
+            return;
+        }
+
+        Span<char> buffer = stackalloc char[value.Length];
+        int written = MemoryExtensions.ToLowerInvariant(value.AsSpan(), buffer);
+        _ = sb.Append(buffer[..written]);
     }
 
     /// <summary>
@@ -321,9 +413,32 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         IsVaryMarker = true
     };
 
+    /// <summary>
+    /// Extracts the <c>Vary</c> field names, normalized once here rather than on every lookup: lower-cased and
+    /// sorted, so the secondary key is deterministic regardless of the order or casing the origin used.
+    /// </summary>
+    /// <remarks>
+    /// Field names are matched case-insensitively, so lower-casing loses nothing — and the variant key is
+    /// rebuilt on every cache read, which is where copying, sorting and lower-casing the names again would
+    /// otherwise be paid. Lower-cased names sort identically under ordinal and case-insensitive comparison.
+    /// </remarks>
     private static string[] ExtractVaryFields(HttpResponseMessage response)
     {
-        return response.Headers.Vary.Count == 0 ? [] : [.. response.Headers.Vary];
+        if (response.Headers.Vary.Count == 0)
+        {
+            return [];
+        }
+
+        string[] fields = [.. response.Headers.Vary];
+
+        for (int i = 0; i < fields.Length; i++)
+        {
+            fields[i] = fields[i].ToLowerInvariant();
+        }
+
+        Array.Sort(fields, StringComparer.Ordinal);
+
+        return fields;
     }
 
     private static bool IsImmutableEntry(CacheControlHeaderValue? cc)
@@ -614,9 +729,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             metrics?.RecordCacheHit(HttpMethod.Head);
             LogCacheHit(getKey);
-            HttpResponseMessage headHit = CreateResponse(entry);
-            headHit.Content = new ByteArrayContent([]);
-            return headHit;
+            return CreateResponse(entry, includeBody: false);
         }
 
         // Stale entry with a validator — conditional HEAD revalidation
@@ -642,9 +755,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                 CacheEntry refreshed = RefreshFromNotModified(entry, revalResponse);
                 await WriteEntryAsync(getKey, refreshed, ct).ConfigureAwait(false);
                 metrics?.RecordCacheHit(HttpMethod.Head);
-                HttpResponseMessage headRefreshed = CreateResponse(refreshed);
-                headRefreshed.Content = new ByteArrayContent([]);
-                return headRefreshed;
+                return CreateResponse(refreshed, includeBody: false);
             }
 
             return revalResponse;
@@ -826,48 +937,49 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// </summary>
     private void ScheduleBackgroundRevalidation(string key, CacheEntry entry, HttpRequestMessage originalRequest)
     {
-        _ = _backgroundRevalidations.GetOrAdd(key, k =>
-            Task.Run(async () =>
+        // Snapshot the request headers now: the caller's HttpRequestMessage is disposed once its response is
+        // returned, which can happen before the background task starts.
+        HttpRequestMessage bgRequest = new(originalRequest.Method, originalRequest.RequestUri);
+        foreach (KeyValuePair<string, IEnumerable<string>> header in originalRequest.Headers)
+        {
+            _ = bgRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+
+        if (entry.ETag is not null)
+        {
+            _ = bgRequest.Headers.Remove("If-None-Match");
+            _ = bgRequest.Headers.TryAddWithoutValidation("If-None-Match", entry.ETag);
+        }
+        else if (entry.LastModified is DateTimeOffset lastModified)
+        {
+            bgRequest.Headers.IfModifiedSince = lastModified;
+        }
+
+        backgroundRevalidations.Schedule(key, async () =>
+        {
+            try
             {
-                try
-                {
-                    HttpRequestMessage bgRequest = new(originalRequest.Method, originalRequest.RequestUri);
-                    foreach (KeyValuePair<string, IEnumerable<string>> header in originalRequest.Headers)
-                    {
-                        _ = bgRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
-                    }
+                HttpResponseMessage response = await base.SendAsync(bgRequest, CancellationToken.None).ConfigureAwait(false);
 
-                    if (entry.ETag is not null)
-                    {
-                        _ = bgRequest.Headers.Remove("If-None-Match");
-                        _ = bgRequest.Headers.TryAddWithoutValidation("If-None-Match", entry.ETag);
-                    }
-                    else if (entry.LastModified is DateTimeOffset lastModified)
-                    {
-                        bgRequest.Headers.IfModifiedSince = lastModified;
-                    }
-
-                    HttpResponseMessage response = await base.SendAsync(bgRequest, CancellationToken.None).ConfigureAwait(false);
-
-                    if (response.StatusCode == HttpStatusCode.NotModified)
-                    {
-                        CacheEntry refreshed = RefreshFromNotModified(entry, response);
-                        await WriteEntryAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    else if (IsResponseCacheable(response))
-                    {
-                        await StoreAsync(key, bgRequest, response, CancellationToken.None).ConfigureAwait(false);
-                    }
-                }
-                catch (Exception ex)
+                if (response.StatusCode == HttpStatusCode.NotModified)
                 {
-                    LogBackgroundRevalidationFailed(key, ex);
+                    CacheEntry refreshed = RefreshFromNotModified(entry, response);
+                    await WriteEntryAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
                 }
-                finally
+                else if (IsResponseCacheable(response))
                 {
-                    _ = _backgroundRevalidations.TryRemove(key, out _);
+                    await StoreAsync(key, bgRequest, response, CancellationToken.None).ConfigureAwait(false);
                 }
-            }));
+            }
+            catch (Exception ex)
+            {
+                LogBackgroundRevalidationFailed(key, ex);
+            }
+            finally
+            {
+                bgRequest.Dispose();
+            }
+        });
     }
 
     /// <summary>
@@ -908,24 +1020,12 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     private async ValueTask InvalidateForUnsafeMethod(HttpRequestMessage request, HttpResponseMessage response, CancellationToken ct)
     {
         // §4.4 MUST — effective request URI
-        string effectiveKey = BuildGetKey(request.RequestUri);
-        if (await cache.GetAsync(effectiveKey, ct).ConfigureAwait(false) is not null)
-        {
-            await cache.RemoveAsync(effectiveKey, ct).ConfigureAwait(false);
-            metrics?.RecordCacheInvalidation();
-            LogCacheInvalidation(effectiveKey, request.Method.Method);
-        }
+        await InvalidateKeyAsync(BuildGetKey(request.RequestUri), request.Method, ct).ConfigureAwait(false);
 
         // §4.4 MAY — Location header
         if (response.Headers.Location is Uri location && location != request.RequestUri)
         {
-            string locationKey = BuildGetKey(location);
-            if (await cache.GetAsync(locationKey, ct).ConfigureAwait(false) is not null)
-            {
-                await cache.RemoveAsync(locationKey, ct).ConfigureAwait(false);
-                metrics?.RecordCacheInvalidation();
-                LogCacheInvalidation(locationKey, request.Method.Method);
-            }
+            await InvalidateKeyAsync(BuildGetKey(location), request.Method, ct).ConfigureAwait(false);
         }
 
         // §4.4 MAY — Content-Location header
@@ -933,14 +1033,24 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             && contentLocation != request.RequestUri
             && contentLocation != response.Headers.Location)
         {
-            string contentLocationKey = BuildGetKey(contentLocation);
-            if (await cache.GetAsync(contentLocationKey, ct).ConfigureAwait(false) is not null)
-            {
-                await cache.RemoveAsync(contentLocationKey, ct).ConfigureAwait(false);
-                metrics?.RecordCacheInvalidation();
-                LogCacheInvalidation(contentLocationKey, request.Method.Method);
-            }
+            await InvalidateKeyAsync(BuildGetKey(contentLocation), request.Method, ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Removes a single cache key as part of §4.4 invalidation.
+    /// </summary>
+    /// <remarks>
+    /// The removal is issued unconditionally rather than probing with a read first: removal is idempotent, so
+    /// the read only served to make the log and metric count confirmed deletions — and against a distributed
+    /// store that meant fetching the whole stored body over the network just to decide whether to log, doubling
+    /// the round-trips of every successful unsafe request. The metric therefore counts invalidations issued.
+    /// </remarks>
+    private async ValueTask InvalidateKeyAsync(string key, HttpMethod method, CancellationToken ct)
+    {
+        await cache.RemoveAsync(key, ct).ConfigureAwait(false);
+        metrics?.RecordCacheInvalidation();
+        LogCacheInvalidation(key, method.Method);
     }
 
     /// <summary>
@@ -986,12 +1096,15 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: storing response for {CacheKey}")]
     private partial void LogCacheStore(string cacheKey);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: not storing {CacheKey}, body of {BodyBytes} bytes exceeds MaxBodySizeBytes ({MaxBodySizeBytes})")]
+    private partial void LogBodyTooLarge(string cacheKey, long bodyBytes, long maxBodySizeBytes);
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: serving stale-while-revalidate for {CacheKey}")]
     private partial void LogStaleWhileRevalidate(string cacheKey);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Cache: background revalidation failed for {CacheKey}")]
     private partial void LogBackgroundRevalidationFailed(string cacheKey, Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Cache: invalidated {CacheKey} after successful {HttpMethod} request (RFC 9111 §4.4)")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: invalidating {CacheKey} after successful {HttpMethod} request (RFC 9111 §4.4)")]
     private partial void LogCacheInvalidation(string cacheKey, string httpMethod);
 }

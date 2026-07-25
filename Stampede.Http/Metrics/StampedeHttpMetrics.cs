@@ -14,7 +14,7 @@ namespace Stampede.Http.Metrics;
 ///   <item><term>stampede_http.cache.revalidations</term><description>Conditional revalidation requests (If-None-Match / If-Modified-Since).</description></item>
 ///   <item><term>stampede_http.cache.stale_errors_served</term><description>Stale responses served under stale-if-error (RFC 5861).</description></item>
 ///   <item><term>stampede_http.cache.stale_while_revalidate_served</term><description>Stale responses served immediately while a background revalidation was triggered (RFC 5861).</description></item>
-///   <item><term>stampede_http.cache.invalidations</term><description>Cache entries invalidated by successful unsafe method responses (RFC 9111 §4.4).</description></item>
+///   <item><term>stampede_http.cache.invalidations</term><description>Cache invalidations issued after successful unsafe method responses (RFC 9111 §4.4).</description></item>
 ///   <item><term>stampede_http.coalescing.deduplicated</term><description>Requests that reused an in-flight coalesced response.</description></item>
 ///   <item><term>stampede_http.coalescing.inflight</term><description>Current number of in-flight coalesced requests at the origin.</description></item>
 ///   <item><term>stampede_http.coalescing.timeouts</term><description>Coalesced waiters that timed out and fell back to independent execution.</description></item>
@@ -70,7 +70,7 @@ public sealed class StampedeHttpMetrics : IDisposable
         _cacheInvalidations = _meter.CreateCounter<long>(
             "stampede_http.cache.invalidations",
             unit: "entries",
-            description: "Number of cache entries invalidated by successful unsafe method responses (RFC 9111 §4.4).");
+            description: "Number of cache invalidations issued after successful unsafe method responses (RFC 9111 §4.4). Removal is idempotent, so this counts keys targeted rather than entries confirmed present.");
 
         _coalescedDeduplicated = _meter.CreateCounter<long>(
             "stampede_http.coalescing.deduplicated",

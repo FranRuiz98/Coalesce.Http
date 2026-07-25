@@ -274,6 +274,12 @@ public static class HttpClientBuilderExtensions
             ServiceDescriptor.KeyedSingleton<ICacheStore>(clientName, (sp, _) =>
                 new MemoryCacheStore(sp.GetRequiredKeyedService<IMemoryCache>(clientName), structuralOptions)));
 
+        // Per-client stale-while-revalidate deduplication. This must outlive the handler: IHttpClientFactory
+        // rotates handler chains, so state held by CachingMiddleware would let two live chains revalidate the
+        // same key at once.
+        builder.Services.TryAdd(
+            ServiceDescriptor.KeyedSingleton<BackgroundRevalidationCoordinator>(clientName, (_, _) => new()));
+
         // Backward compatibility: non-keyed resolution returns the first-registered client's services.
         builder.Services.TryAddSingleton<ICacheKeyBuilder>(sp =>
             sp.GetRequiredKeyedService<ICacheKeyBuilder>(clientName));
@@ -286,6 +292,7 @@ public static class HttpClientBuilderExtensions
                 sp.GetRequiredKeyedService<ICacheKeyBuilder>(clientName),
                 sp.GetRequiredService<IOptionsMonitor<CacheOptions>>(),
                 clientName,
+                sp.GetRequiredKeyedService<BackgroundRevalidationCoordinator>(clientName),
                 sp.GetService<StampedeHttpMetrics>(),
                 sp.GetService<ILoggerFactory>()?.CreateLogger<CachingMiddleware>(),
                 sp.GetService<TimeProvider>()));
