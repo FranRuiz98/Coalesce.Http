@@ -58,4 +58,12 @@ internal sealed class BackgroundRevalidationCoordinator
             }
         });
     }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="key"/> currently has a background refresh in
+    /// flight. Exposed for tests to poll a read-only invariant instead of guessing how long a refresh takes to
+    /// run under load — retrying <see cref="Schedule"/> itself would not be safe, since a successful call has
+    /// the side effect of starting another refresh.
+    /// </summary>
+    internal bool IsScheduled(string key) => _inflight.ContainsKey(key);
 }

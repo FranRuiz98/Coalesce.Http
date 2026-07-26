@@ -70,8 +70,12 @@ public sealed class BackgroundRevalidationCoordinatorTests
                 return Task.CompletedTask;
             });
 
-            // Let the refresh finish and release its claim before scheduling the next one.
-            await Task.Delay(20, TestContext.Current.CancellationToken);
+            // Wait for this refresh to release its key before the next iteration schedules again — a fixed
+            // delay is not reliable under CI/parallel-test thread-pool contention. Polling `IsScheduled`
+            // rather than retrying `Schedule` itself: a successful `Schedule` call has the side effect of
+            // starting another refresh, so retrying it inside the wait would over-count `started`.
+            await WaitUntilAsync(() => !coordinator.IsScheduled("key"),
+                "each refresh must run and release its key before the next Schedule call is attempted");
         }
 
         // Regression: claiming the key from inside the background task allowed the refresh to finish before
@@ -92,7 +96,10 @@ public sealed class BackgroundRevalidationCoordinatorTests
             throw new InvalidOperationException("origin unreachable");
         });
 
-        await Task.Delay(50, TestContext.Current.CancellationToken);
+        // Wait for the failed refresh's finally block to release the key before scheduling again — see the
+        // reasoning in Schedule_AfterPreviousRefreshCompletes_StartsAgain.
+        await WaitUntilAsync(() => !coordinator.IsScheduled("key"),
+            "a failed refresh must release its key even though the callback threw");
 
         coordinator.Schedule("key", () =>
         {
@@ -100,8 +107,28 @@ public sealed class BackgroundRevalidationCoordinatorTests
             return Task.CompletedTask;
         });
 
-        await Task.Delay(50, TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() => Volatile.Read(ref started) == 2,
+            "a failed refresh must not block the key permanently");
+    }
 
-        Volatile.Read(ref started).Should().Be(2, "a failed refresh must not block the key permanently");
+    /// <summary>
+    /// Waits for <paramref name="condition"/> to become <see langword="true"/>, polling on a short interval up
+    /// to a generous timeout. Used instead of a single fixed delay to avoid flaking under thread-pool
+    /// contention from parallel test execution — the condition itself must be read-only, since a condition
+    /// with side effects would be retried along with the polling.
+    /// </summary>
+    private static async Task WaitUntilAsync(Func<bool> condition, string because)
+    {
+        for (int i = 0; i < 200; i++)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+
+        condition().Should().BeTrue(because);
     }
 }
