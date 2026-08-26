@@ -609,7 +609,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // Fresh cache hit — skip if client demands revalidation (§5.2.1.4), unless entry is immutable (RFC 8246)
         if (entry is not null && !entry.IsExpired(_timeProvider) && (!requestNoCache || entry.Immutable))
         {
-            metrics?.RecordCacheHit();
+            metrics?.RecordCacheHit(clientName: clientName);
             LogCacheHit(key);
 
             // RFC 9111 §4.3.2 — if the client sent a conditional request whose validator
@@ -626,7 +626,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // RFC 5861 §3 — stale-while-revalidate: serve stale immediately, revalidate in background
         if (entry is not null && !requestNoCache && CanServeStaleWhileRevalidate(entry))
         {
-            metrics?.RecordStaleWhileRevalidateServed();
+            metrics?.RecordStaleWhileRevalidateServed(clientName);
             LogStaleWhileRevalidate(key);
             ScheduleBackgroundRevalidation(key, entry, request);
             return CreateResponse(entry);
@@ -641,7 +641,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                 return new HttpResponseMessage(HttpStatusCode.GatewayTimeout);
             }
 
-            metrics?.RecordRevalidation();
+            metrics?.RecordRevalidation(clientName: clientName);
             LogRevalidation(key);
             return await RevalidateAsync(key, entry, request, ct).ConfigureAwait(false);
         }
@@ -653,7 +653,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return new HttpResponseMessage(HttpStatusCode.GatewayTimeout);
         }
 
-        metrics?.RecordCacheMiss();
+        metrics?.RecordCacheMiss(clientName);
         LogCacheMiss(key);
 
         HttpResponseMessage response;
@@ -663,7 +663,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         }
         catch when (CanServeStaleOnError(entry))
         {
-            metrics?.RecordStaleErrorServed();
+            metrics?.RecordStaleErrorServed(clientName);
             LogStaleIfErrorServed(key);
             return CreateResponse(entry!);
         }
@@ -672,7 +672,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         if (entry is not null && (int)response.StatusCode >= 500 && CanServeStaleOnError(entry))
         {
             response.Dispose();
-            metrics?.RecordStaleErrorServed();
+            metrics?.RecordStaleErrorServed(clientName);
             LogStaleIfErrorServed(key);
             return CreateResponse(entry);
         }
@@ -727,7 +727,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // Fresh GET entry — serve headers with empty body; immutable entries ignore no-cache (RFC 8246)
         if (entry is not null && !entry.IsExpired(_timeProvider) && (!requestNoCache || entry.Immutable))
         {
-            metrics?.RecordCacheHit(HttpMethod.Head);
+            metrics?.RecordCacheHit(HttpMethod.Head, clientName);
             LogCacheHit(getKey);
             return CreateResponse(entry, includeBody: false);
         }
@@ -735,7 +735,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // Stale entry with a validator — conditional HEAD revalidation
         if (entry is not null && (entry.ETag is not null || entry.LastModified is not null))
         {
-            metrics?.RecordRevalidation(HttpMethod.Head);
+            metrics?.RecordRevalidation(HttpMethod.Head, clientName);
             LogRevalidation(getKey);
 
             if (entry.ETag is not null)
@@ -754,7 +754,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             {
                 CacheEntry refreshed = RefreshFromNotModified(entry, revalResponse);
                 await WriteEntryAsync(getKey, refreshed, ct).ConfigureAwait(false);
-                metrics?.RecordCacheHit(HttpMethod.Head);
+                metrics?.RecordCacheHit(HttpMethod.Head, clientName);
                 return CreateResponse(refreshed, includeBody: false);
             }
 
@@ -842,7 +842,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         }
         catch when (CanServeStaleOnError(entry))
         {
-            metrics?.RecordStaleErrorServed();
+            metrics?.RecordStaleErrorServed(clientName);
             return CreateResponse(entry);
         }
 
@@ -850,7 +850,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         if ((int)response.StatusCode >= 500 && CanServeStaleOnError(entry))
         {
             response.Dispose();
-            metrics?.RecordStaleErrorServed();
+            metrics?.RecordStaleErrorServed(clientName);
             return CreateResponse(entry);
         }
 
@@ -858,7 +858,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             CacheEntry refreshed = RefreshFromNotModified(entry, response);
             await WriteEntryAsync(key, refreshed, ct).ConfigureAwait(false);
-            metrics?.RecordCacheHit();
+            metrics?.RecordCacheHit(clientName: clientName);
             return CreateResponse(refreshed);
         }
 
@@ -1049,7 +1049,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     private async ValueTask InvalidateKeyAsync(string key, HttpMethod method, CancellationToken ct)
     {
         await cache.RemoveAsync(key, ct).ConfigureAwait(false);
-        metrics?.RecordCacheInvalidation();
+        metrics?.RecordCacheInvalidation(clientName);
         LogCacheInvalidation(key, method.Method);
     }
 

@@ -42,7 +42,7 @@ internal sealed partial class RequestCoalescer(IOptionsMonitor<CoalescerOptions>
             // If there's already an inflight request for this key, wait for it to complete and return a clone of the response
             if (_inflight.TryGetValue(key, out CoalescedRequest? existing))
             {
-                metrics?.RecordCoalescedDeduplicated();
+                metrics?.RecordCoalescedDeduplicated(clientName);
                 LogCoalescedWaiter(key);
 
                 try
@@ -61,7 +61,7 @@ internal sealed partial class RequestCoalescer(IOptionsMonitor<CoalescerOptions>
                 catch (TimeoutException)
                 {
                     LogCoalescedWaiterTimeout(key);
-                    metrics?.RecordCoalescingTimeout();
+                    metrics?.RecordCoalescingTimeout(clientName);
                     // Timeout waiting for the winner — fall through to execute independently
                     break;
                 }
@@ -76,7 +76,7 @@ internal sealed partial class RequestCoalescer(IOptionsMonitor<CoalescerOptions>
                 continue;
             }
 
-            metrics?.IncrementInflight();
+            metrics?.IncrementInflight(clientName);
             LogWinnerStart(key);
 
             // We are the winner - execute the factory and set the result for all waiters
@@ -109,7 +109,7 @@ internal sealed partial class RequestCoalescer(IOptionsMonitor<CoalescerOptions>
             finally
             {
                 _inflight.TryRemove(key, out _);
-                metrics?.DecrementInflight();
+                metrics?.DecrementInflight(clientName);
 
                 // Observe the TCS task's exception (if any) to prevent UnobservedTaskException.
                 if (coalescedRequest.Tcs.Task.IsFaulted)

@@ -4,6 +4,7 @@ using Stampede.Http.Metrics;
 using Stampede.Http.Options;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -33,6 +34,10 @@ public sealed class StampedeHttpMetricsTests : IDisposable
     private long _headCacheHits;
     private long _headCacheRevalidations;
 
+    // Every stampede_http.client_name tag value observed on any measurement, in emission order
+    // (null entries mark measurements emitted without the tag).
+    private readonly List<string?> _clientNameTags = [];
+
     private static readonly FieldInfo MeterField =
         typeof(StampedeHttpMetrics).GetField("_meter", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
@@ -55,14 +60,20 @@ public sealed class StampedeHttpMetricsTests : IDisposable
         _listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
             bool isHead = false;
+            string? clientNameTag = null;
             foreach (KeyValuePair<string, object?> tag in tags)
             {
                 if (tag.Key == "http.request.method" && tag.Value is string m && m == "HEAD")
                 {
                     isHead = true;
-                    break;
+                }
+                else if (tag.Key == "stampede_http.client_name" && tag.Value is string c)
+                {
+                    clientNameTag = c;
                 }
             }
+
+            _clientNameTags.Add(clientNameTag);
 
             switch (instrument.Name)
             {
@@ -366,6 +377,64 @@ public sealed class StampedeHttpMetricsTests : IDisposable
 
         _cacheHits.Should().Be(1, "GET cache hit must be recorded");
         _headCacheHits.Should().Be(0, "GET cache hit must not carry the HEAD tag");
+    }
+
+    // ── Client name tag ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task NamedClient_CacheHit_CarriesClientNameTag()
+    {
+        ICacheStore cache = new MemoryCacheStore(new MemoryCache(new MemoryCacheOptions()));
+        DefaultCacheKeyBuilder keyBuilder = new();
+        CacheOptions options = new() { DefaultTtl = TimeSpan.FromMinutes(5) };
+        StubTransport stub = new(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") });
+
+        CachingMiddleware middleware = new(
+            cache, keyBuilder, new StaticOptionsMonitor<CacheOptions>(options), "catalog",
+            new BackgroundRevalidationCoordinator(), _metrics)
+        { InnerHandler = stub };
+
+        HttpMessageInvoker invoker = new(middleware);
+
+        _ = await invoker.SendAsync(Req("https://api.test/named-hit"), CancellationToken.None);
+        _ = await invoker.SendAsync(Req("https://api.test/named-hit"), CancellationToken.None);
+
+        _clientNameTags.Should().Contain("catalog", "the hit and miss measurements must carry the named client's tag");
+    }
+
+    [Fact]
+    public async Task DefaultClient_NoTag_EmitsNoClientNameTag()
+    {
+        // The parameterless test constructor wraps clientName = string.Empty (the unnamed/default client).
+        (CachingMiddleware middleware, _) = BuildPipeline(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") });
+
+        HttpMessageInvoker invoker = new(middleware);
+
+        _ = await invoker.SendAsync(Req("https://api.test/unnamed-hit"), CancellationToken.None);
+        _ = await invoker.SendAsync(Req("https://api.test/unnamed-hit"), CancellationToken.None);
+
+        _clientNameTags.Should().OnlyContain(tag => tag == null,
+            "the default/unnamed client must not emit a stampede_http.client_name tag");
+    }
+
+    [Fact]
+    public async Task Coalescing_NamedClient_DeduplicatedMeasurement_CarriesClientNameTag()
+    {
+        RequestCoalescer coalescer = new(
+            new StaticOptionsMonitor<CoalescerOptions>(new CoalescerOptions()), "search", _metrics);
+        RequestKey key = new("GET", "https://api.test/named-coalesced");
+
+        TaskCompletionSource<HttpResponseMessage> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<HttpResponseMessage> t1 = coalescer.ExecuteAsync(key, () => tcs.Task, TestContext.Current.CancellationToken);
+        Task<HttpResponseMessage> t2 = coalescer.ExecuteAsync(key, () => tcs.Task, TestContext.Current.CancellationToken);
+
+        tcs.SetResult(new HttpResponseMessage(HttpStatusCode.OK));
+
+        await Task.WhenAll(t1, t2);
+
+        _clientNameTags.Should().Contain("search", "the deduplicated waiter's measurement must carry the named client's tag");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
