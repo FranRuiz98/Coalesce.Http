@@ -50,6 +50,19 @@ public sealed record CacheEntry
     public bool Immutable { get; init; }
 
     /// <summary>
+    /// Wall-clock time the most recent origin call for this entry took, in milliseconds — the initial
+    /// fetch, a conditional revalidation, or a background refresh, whichever last updated this entry.
+    /// Zero means unmeasured: entries written before 2.5 deserialize with this defaulted, and it is
+    /// otherwise always positive once any origin call has completed for the key.
+    /// </summary>
+    /// <remarks>
+    /// Used by early revalidation (XFetch, <see cref="CacheOptions.EnableEarlyRevalidation"/>) to scale how
+    /// far ahead of <see cref="ExpiresAt"/> a background refresh is attempted — a resource that is
+    /// expensive to recompute starts being refreshed earlier than one that answers instantly.
+    /// </remarks>
+    public long OriginFetchDurationMs { get; init; }
+
+    /// <summary>
     /// When <see langword="true"/>, this entry is not a stored response but a <em>Vary marker</em> (RFC 9111 §4.1):
     /// it lives at the primary cache key and records the <see cref="VaryFields"/> that a request must be keyed on,
     /// pointing lookups to the correct secondary-key variant. Markers carry an empty <see cref="Body"/> and are

@@ -17,12 +17,20 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                                         BackgroundRevalidationCoordinator backgroundRevalidations,
                                         StampedeHttpMetrics? metrics = null,
                                         ILogger<CachingMiddleware>? logger = null,
-                                        TimeProvider? timeProvider = null) : DelegatingHandler
+                                        TimeProvider? timeProvider = null,
+                                        Func<double>? randomSource = null) : DelegatingHandler
 {
     private static readonly string[] _notModifiedHeaders = ["ETag", "Cache-Control", "Content-Location", "Date", "Expires", "Vary"];
 
     private readonly ILogger logger = logger ?? NullLogger<CachingMiddleware>.Instance;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
+    /// <summary>
+    /// Source of uniform [0, 1) randomness for <see cref="ShouldEarlyRevalidate"/> (XFetch). Injectable so
+    /// tests can make the otherwise-probabilistic trigger deterministic, the same role
+    /// <see cref="TimeProvider"/> plays for freshness calculations.
+    /// </summary>
+    private readonly Func<double> _random = randomSource ?? Random.Shared.NextDouble;
 
     private CacheOptions Options => optionsMonitor.Get(clientName);
 
@@ -31,9 +39,10 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// background-revalidation scope.
     /// </summary>
     internal CachingMiddleware(ICacheStore cache, ICacheKeyBuilder keyBuilder, CacheOptions options,
-        StampedeHttpMetrics? metrics = null, ILogger<CachingMiddleware>? logger = null, TimeProvider? timeProvider = null)
+        StampedeHttpMetrics? metrics = null, ILogger<CachingMiddleware>? logger = null, TimeProvider? timeProvider = null,
+        Func<double>? randomSource = null)
         : this(cache, keyBuilder, new StaticOptionsMonitor<CacheOptions>(options), string.Empty,
-               new BackgroundRevalidationCoordinator(), metrics, logger, timeProvider) { }
+               new BackgroundRevalidationCoordinator(), metrics, logger, timeProvider, randomSource) { }
 
     /// <summary>
     /// Determines whether the specified HTTP request is eligible for caching based on its method, headers, and content.
@@ -265,9 +274,13 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// <param name="key">The cache key under which the response should be stored.</param>
     /// <param name="request">The request that produced the response; its headers are captured for <c>Vary</c> handling.</param>
     /// <param name="response">The HTTP response message to be cached.</param>
+    /// <param name="fetchDuration">
+    /// Wall-clock time the origin call took, recorded on the entry as
+    /// <see cref="CacheEntry.OriginFetchDurationMs"/> for early revalidation (XFetch) to scale by.
+    /// </param>
     /// <param name="ct">A cancellation token to observe while waiting for the task to complete.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>
-    private async Task StoreAsync(string key, HttpRequestMessage request, HttpResponseMessage response, CancellationToken ct)
+    private async Task StoreAsync(string key, HttpRequestMessage request, HttpResponseMessage response, TimeSpan fetchDuration, CancellationToken ct)
     {
         if (response.Content is null)
         {
@@ -348,7 +361,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             StaleIfErrorSeconds = staleIfError,
             StaleWhileRevalidateSeconds = staleWhileRevalidate,
             MustRevalidate = cc?.MustRevalidate == true || cc?.ProxyRevalidate == true,
-            Immutable = IsImmutableEntry(cc)
+            Immutable = IsImmutableEntry(cc),
+            OriginFetchDurationMs = Math.Max(0L, (long)fetchDuration.TotalMilliseconds)
         };
 
         await WriteEntryAsync(key, entry, ct).ConfigureAwait(false);
@@ -721,6 +735,16 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             metrics?.RecordCacheHit(clientName: clientName);
             LogCacheHit(key);
 
+            // XFetch (opt-in, §CacheOptions.EnableEarlyRevalidation): probabilistically refresh a
+            // still-fresh entry ahead of its expiry. Purely a background side effect — the response
+            // served below is unaffected either way.
+            if (Options.EnableEarlyRevalidation && ShouldEarlyRevalidate(entry))
+            {
+                metrics?.RecordEarlyRevalidationTriggered(clientName);
+                LogEarlyRevalidationTriggered(key);
+                ScheduleBackgroundRevalidation(key, entry, request);
+            }
+
             // RFC 9111 §4.3.2 — if the client sent a conditional request whose validator
             // matches the stored entry, return 304 directly without contacting the origin.
             HttpResponseMessage? notModified = TryCreateNotModified(request, entry);
@@ -774,6 +798,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         metrics?.RecordCacheMiss(clientName);
         LogCacheMiss(key);
 
+        DateTimeOffset fetchStart = _timeProvider.GetUtcNow();
         HttpResponseMessage response;
         try
         {
@@ -785,6 +810,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             LogStaleIfErrorServed(key);
             return CreateResponse(entry!);
         }
+
+        TimeSpan fetchDuration = _timeProvider.GetUtcNow() - fetchStart;
 
         // RFC 5861 §4 — stale-if-error: serve stale on 5xx if within the error window
         if (entry is not null && (int)response.StatusCode >= 500 && CanServeStaleOnError(entry))
@@ -800,7 +827,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         if (!noStore && IsResponseCacheable(response, request))
         {
             LogCacheStore(key);
-            await StoreAsync(key, request, response, ct).ConfigureAwait(false);
+            await StoreAsync(key, request, response, fetchDuration, ct).ConfigureAwait(false);
         }
 
         return response;
@@ -876,11 +903,13 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                 request.Headers.IfModifiedSince = lastModified;
             }
 
+            DateTimeOffset headFetchStart = _timeProvider.GetUtcNow();
             HttpResponseMessage revalResponse = await base.SendAsync(request, ct).ConfigureAwait(false);
+            TimeSpan headFetchDuration = _timeProvider.GetUtcNow() - headFetchStart;
 
             if (revalResponse.StatusCode == HttpStatusCode.NotModified)
             {
-                CacheEntry refreshed = RefreshFromNotModified(entry, revalResponse);
+                CacheEntry refreshed = RefreshFromNotModified(entry, revalResponse, headFetchDuration);
                 await WriteEntryAsync(getKey, refreshed, ct).ConfigureAwait(false);
                 metrics?.RecordCacheHit(HttpMethod.Head, clientName);
                 return CreateResponse(refreshed, includeBody: false);
@@ -963,6 +992,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             request.Headers.IfModifiedSince = lastModified;
         }
 
+        DateTimeOffset fetchStart = _timeProvider.GetUtcNow();
         HttpResponseMessage response;
         try
         {
@@ -974,6 +1004,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return CreateResponse(entry);
         }
 
+        TimeSpan fetchDuration = _timeProvider.GetUtcNow() - fetchStart;
+
         // RFC 5861 §4 — stale-if-error: serve stale on 5xx if within the error window
         if ((int)response.StatusCode >= 500 && CanServeStaleOnError(entry))
         {
@@ -984,7 +1016,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         if (response.StatusCode == HttpStatusCode.NotModified)
         {
-            CacheEntry refreshed = RefreshFromNotModified(entry, response);
+            CacheEntry refreshed = RefreshFromNotModified(entry, response, fetchDuration);
             await WriteEntryAsync(key, refreshed, ct).ConfigureAwait(false);
             metrics?.RecordCacheHit(clientName: clientName);
             return CreateResponse(refreshed);
@@ -995,7 +1027,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         if (!noStore && IsResponseCacheable(response, request))
         {
-            await StoreAsync(key, request, response, ct).ConfigureAwait(false);
+            await StoreAsync(key, request, response, fetchDuration, ct).ConfigureAwait(false);
         }
 
         return response;
@@ -1008,7 +1040,13 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// revalidation time so the <c>Age</c> calculation restarts from the validation response (§4.2.3)
     /// instead of continuing to grow from the original store time.
     /// </summary>
-    private CacheEntry RefreshFromNotModified(CacheEntry entry, HttpResponseMessage response)
+    /// <param name="entry">The entry being refreshed.</param>
+    /// <param name="response">The <c>304</c> response.</param>
+    /// <param name="fetchDuration">
+    /// Wall-clock time this revalidation call took, recorded as the entry's new
+    /// <see cref="CacheEntry.OriginFetchDurationMs"/> for early revalidation (XFetch) to scale by.
+    /// </param>
+    private CacheEntry RefreshFromNotModified(CacheEntry entry, HttpResponseMessage response, TimeSpan fetchDuration)
     {
         // §4.3.4 — update the stored response's header fields with those provided in the 304
         Dictionary<string, string[]> headers = new(entry.Headers.Count, StringComparer.OrdinalIgnoreCase);
@@ -1031,7 +1069,8 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             ExpiresAt = FreshnessCalculator.ComputeExpiresAt(response, Options, _timeProvider),
             StaleIfErrorSeconds = FreshnessCalculator.ExtractStaleIfError(response, Options),
             StaleWhileRevalidateSeconds = FreshnessCalculator.ExtractStaleWhileRevalidate(response, Options),
-            MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true
+            MustRevalidate = response.Headers.CacheControl?.MustRevalidate == true || response.Headers.CacheControl?.ProxyRevalidate == true,
+            OriginFetchDurationMs = Math.Max(0L, (long)fetchDuration.TotalMilliseconds)
         };
     }
 
@@ -1057,6 +1096,35 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             && entry.StaleWhileRevalidateSeconds > 0
             && entry.IsExpired(_timeProvider)
             && _timeProvider.GetUtcNow() < entry.ExpiresAt + TimeSpan.FromSeconds(entry.StaleWhileRevalidateSeconds);
+    }
+
+    /// <summary>
+    /// Decides whether to trigger a background refresh of a still-fresh entry ahead of its expiry
+    /// (XFetch — Vattani, Padmanabhan &amp; Gionis, 2015). The probability of triggering rises as
+    /// <see cref="CacheEntry.ExpiresAt"/> approaches, scaled by how expensive the entry was to fetch
+    /// (<see cref="CacheEntry.OriginFetchDurationMs"/>): an expensive-to-recompute resource starts being
+    /// refreshed early well before a cheap one, spreading out — rather than synchronizing — when
+    /// concurrent callers or process instances all decide to refetch the same key near its expiry.
+    /// </summary>
+    /// <remarks>
+    /// Formula: trigger when <c>now + delta * beta * -ln(r) &gt;= ExpiresAt</c>, where <c>delta</c> is the
+    /// measured origin fetch duration, <c>beta</c> is <see cref="CacheOptions.EarlyRevalidationBeta"/>, and
+    /// <c>r</c> is uniform in (0, 1]. <c>-ln(r)</c> is exponentially distributed with mean 1, so the "lead
+    /// time" <c>delta * beta * -ln(r)</c> has mean <c>delta * beta</c>: entries are refreshed, on average,
+    /// that far ahead of expiry, with the exact moment randomized per attempt.
+    /// </remarks>
+    private bool ShouldEarlyRevalidate(CacheEntry entry)
+    {
+        if (entry.OriginFetchDurationMs <= 0)
+        {
+            return false; // nothing measured yet — a pre-2.5 entry, or a key never actually fetched
+        }
+
+        // 1 - r maps _random()'s [0, 1) onto (0, 1], keeping -log(r) away from +infinity at r = 0.
+        double r = 1.0 - _random();
+        double leadMs = entry.OriginFetchDurationMs * Options.EarlyRevalidationBeta * -Math.Log(r);
+
+        return _timeProvider.GetUtcNow() + TimeSpan.FromMilliseconds(leadMs) >= entry.ExpiresAt;
     }
 
     /// <summary>
@@ -1087,16 +1155,18 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             try
             {
+                DateTimeOffset fetchStart = _timeProvider.GetUtcNow();
                 HttpResponseMessage response = await base.SendAsync(bgRequest, CancellationToken.None).ConfigureAwait(false);
+                TimeSpan fetchDuration = _timeProvider.GetUtcNow() - fetchStart;
 
                 if (response.StatusCode == HttpStatusCode.NotModified)
                 {
-                    CacheEntry refreshed = RefreshFromNotModified(entry, response);
+                    CacheEntry refreshed = RefreshFromNotModified(entry, response, fetchDuration);
                     await WriteEntryAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
                 }
                 else if (IsResponseCacheable(response, bgRequest))
                 {
-                    await StoreAsync(key, bgRequest, response, CancellationToken.None).ConfigureAwait(false);
+                    await StoreAsync(key, bgRequest, response, fetchDuration, CancellationToken.None).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
@@ -1228,6 +1298,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: serving expired entry for {CacheKey} within the request's max-stale directive")]
     private partial void LogMaxStaleServed(string cacheKey);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: early revalidation (XFetch) triggered for {CacheKey}")]
+    private partial void LogEarlyRevalidationTriggered(string cacheKey);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Cache: background revalidation failed for {CacheKey}")]
     private partial void LogBackgroundRevalidationFailed(string cacheKey, Exception exception);

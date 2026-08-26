@@ -22,6 +22,7 @@ namespace Stampede.Http.Metrics;
 ///   <item><term>stampede_http.cache.revalidations</term><description>Conditional revalidation requests (If-None-Match / If-Modified-Since).</description></item>
 ///   <item><term>stampede_http.cache.stale_errors_served</term><description>Stale responses served under stale-if-error (RFC 5861).</description></item>
 ///   <item><term>stampede_http.cache.stale_while_revalidate_served</term><description>Stale responses served immediately while a background revalidation was triggered (RFC 5861).</description></item>
+///   <item><term>stampede_http.cache.early_revalidations_triggered</term><description>Fresh hits that probabilistically triggered a background refresh ahead of expiry (XFetch).</description></item>
 ///   <item><term>stampede_http.cache.invalidations</term><description>Cache invalidations issued after successful unsafe method responses (RFC 9111 §4.4).</description></item>
 ///   <item><term>stampede_http.coalescing.deduplicated</term><description>Requests that reused an in-flight coalesced response.</description></item>
 ///   <item><term>stampede_http.coalescing.inflight</term><description>Current number of in-flight coalesced requests at the origin.</description></item>
@@ -43,6 +44,7 @@ public sealed class StampedeHttpMetrics : IDisposable
     private readonly Counter<long> _cacheRevalidations;
     private readonly Counter<long> _staleErrorsServed;
     private readonly Counter<long> _staleWhileRevalidateServed;
+    private readonly Counter<long> _earlyRevalidationsTriggered;
     private readonly Counter<long> _cacheInvalidations;
     private readonly Counter<long> _coalescedDeduplicated;
     private readonly UpDownCounter<long> _coalescedInflight;
@@ -77,6 +79,11 @@ public sealed class StampedeHttpMetrics : IDisposable
             "stampede_http.cache.stale_while_revalidate_served",
             unit: "requests",
             description: "Number of stale responses served immediately while a background revalidation was triggered (RFC 5861 §3).");
+
+        _earlyRevalidationsTriggered = _meter.CreateCounter<long>(
+            "stampede_http.cache.early_revalidations_triggered",
+            unit: "requests",
+            description: "Number of fresh hits that probabilistically triggered a background refresh ahead of expiry (XFetch).");
 
         _cacheInvalidations = _meter.CreateCounter<long>(
             "stampede_http.cache.invalidations",
@@ -135,6 +142,9 @@ public sealed class StampedeHttpMetrics : IDisposable
 
     internal void RecordStaleWhileRevalidateServed(string? clientName = null) =>
         _staleWhileRevalidateServed.Add(1, BuildTags(method: null, clientName));
+
+    internal void RecordEarlyRevalidationTriggered(string? clientName = null) =>
+        _earlyRevalidationsTriggered.Add(1, BuildTags(method: null, clientName));
 
     internal void RecordCacheInvalidation(string? clientName = null) =>
         _cacheInvalidations.Add(1, BuildTags(method: null, clientName));

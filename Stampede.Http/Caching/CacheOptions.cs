@@ -209,4 +209,52 @@ public sealed class CacheOptions
     /// hash of the <c>Authorization</c> value so different credentials are never mixed.
     /// </remarks>
     public AuthorizationCachingMode AuthorizationCaching { get; set; } = AuthorizationCachingMode.Never;
+
+    /// <summary>
+    /// Gets or sets whether fresh cache hits probabilistically trigger a background refresh ahead of
+    /// their expiry (XFetch — Vattani, Padmanabhan &amp; Gionis, "Optimal Probabilistic Cache
+    /// Stampede Prevention", 2015). Default is <see langword="false"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This targets a different failure mode than <c>stale-while-revalidate</c>: that mechanism reacts
+    /// once an entry has <em>already</em> gone stale; this one spreads out <em>when</em> different
+    /// callers or process instances refresh a not-yet-expired entry, so they don't all decide to refetch
+    /// it in the same instant it expires. The probability of triggering rises the closer the entry is to
+    /// <see cref="CacheEntry.ExpiresAt"/>, scaled by how expensive the entry was to fetch
+    /// (<see cref="CacheEntry.OriginFetchDurationMs"/>) via <see cref="EarlyRevalidationBeta"/> — cheap
+    /// entries are refreshed right up against expiry, expensive ones start earlier.
+    /// </para>
+    /// <para>
+    /// The refresh runs through the same <see cref="BackgroundRevalidationCoordinator"/> as
+    /// <c>stale-while-revalidate</c>, so at most one runs per key at a time regardless of how many
+    /// concurrent hits trigger it. The response that triggered it is unaffected either way — this only
+    /// ever adds a background side effect to an otherwise-normal fresh hit.
+    /// </para>
+    /// </remarks>
+    public bool EnableEarlyRevalidation { get; set; }
+
+    private double _earlyRevalidationBeta = 1.0;
+
+    /// <summary>
+    /// Gets or sets the tuning parameter (<c>β</c>) controlling how far ahead of expiry
+    /// <see cref="EnableEarlyRevalidation"/> starts refreshing an entry, in units of its measured origin
+    /// fetch duration. The expected lead time before expiry is <c>OriginFetchDurationMs × β</c>; higher
+    /// values refresh earlier and more often, at the cost of more background origin calls. Default is
+    /// <c>1.0</c>, the value used in the XFetch paper's evaluation.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is not positive.</exception>
+    public double EarlyRevalidationBeta
+    {
+        get => _earlyRevalidationBeta;
+        set
+        {
+            if (value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "EarlyRevalidationBeta must be positive.");
+            }
+
+            _earlyRevalidationBeta = value;
+        }
+    }
 }
