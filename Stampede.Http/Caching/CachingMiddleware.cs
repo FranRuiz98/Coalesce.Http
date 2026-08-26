@@ -66,6 +66,89 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     }
 
     /// <summary>
+    /// Checks the client's <c>max-age</c> and <c>min-fresh</c> request directives (RFC 9111 §5.2.1.1,
+    /// §5.2.1.3) against a structurally fresh entry. A request can tighten the entry's own freshness
+    /// lifetime — asking for a response no older than <c>max-age</c>, or one that will stay fresh for
+    /// at least <c>min-fresh</c> longer — even when the entry itself has not expired yet. Neither
+    /// directive widens freshness; an entry that has already expired is handled separately (stale-while-
+    /// revalidate, <c>max-stale</c>, or conditional revalidation).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately independent of <see cref="CacheEntry.Immutable"/>: RFC 8246 exempts immutable
+    /// responses from revalidation prompted by the <em>server's</em> own <c>no-cache</c>/<c>must-revalidate</c>
+    /// semantics, but says nothing about a client's explicit recency requirement — a caller asking for
+    /// data no older than 5 seconds should not receive a two-day-old immutable entry.
+    /// </remarks>
+    private bool SatisfiesRequestFreshnessDirectives(CacheEntry entry, HttpRequestMessage request)
+    {
+        CacheControlHeaderValue? cc = request.Headers.CacheControl;
+        if (cc is null)
+        {
+            return true;
+        }
+
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+
+        // §5.2.1.1 — max-age: reject a response older than the client's bound, even if still fresh
+        // by the entry's own lifetime.
+        if (cc.MaxAge is TimeSpan requestMaxAge && (now - entry.StoredAt) > requestMaxAge)
+        {
+            return false;
+        }
+
+        // §5.2.1.3 — min-fresh: reject a response that won't remain fresh long enough into the future.
+        if (cc.MinFresh is TimeSpan minFresh && (entry.ExpiresAt - now) < minFresh)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Checks whether the client's <c>max-stale</c> request directive (RFC 9111 §5.2.1.2) permits
+    /// serving an already-expired entry as-is, without contacting the origin.
+    /// </summary>
+    /// <remarks>
+    /// <c>max-stale</c> with no value accepts any amount of staleness; <c>max-stale=N</c> accepts up to
+    /// <c>N</c> seconds past <see cref="CacheEntry.ExpiresAt"/>. Per §5.2.2.2, a cache MUST NOT honor
+    /// this when the stored response carries <c>must-revalidate</c>/<c>proxy-revalidate</c> — those are
+    /// the origin's explicit instruction that no staleness is acceptable under any circumstances,
+    /// which overrides what any individual client is willing to tolerate.
+    /// <para>
+    /// This directive can only widen acceptance of an entry the backing store still holds — it cannot
+    /// resurrect one already evicted. <see cref="MemoryCacheStore"/> drops an entry immediately once it
+    /// has no freshness, no stale-if-error/stale-while-revalidate window, and no validator-driven
+    /// revalidation grace left (see <see cref="MemoryCacheStore.ComputeRetention"/>), since at that point
+    /// nothing — including this directive — could ever serve or revalidate it again. In practice
+    /// <c>max-stale</c> matters most for entries that already carry an <c>ETag</c>/<c>Last-Modified</c>
+    /// validator or an origin-configured stale window, which is what keeps them retrievable past
+    /// <c>ExpiresAt</c> in the first place.
+    /// </para>
+    /// </remarks>
+    private bool IsWithinRequestMaxStale(CacheEntry entry, HttpRequestMessage request)
+    {
+        if (entry.MustRevalidate)
+        {
+            return false;
+        }
+
+        CacheControlHeaderValue? cc = request.Headers.CacheControl;
+        if (cc?.MaxStale != true)
+        {
+            return false;
+        }
+
+        if (cc.MaxStaleLimit is not TimeSpan limit)
+        {
+            return true; // max-stale with no value: any staleness is acceptable
+        }
+
+        TimeSpan staleness = _timeProvider.GetUtcNow() - entry.ExpiresAt;
+        return staleness <= limit;
+    }
+
+    /// <summary>
     /// Determines whether the specified HTTP response can be cached based on its status code and cache control headers.
     /// </summary>
     /// <remarks>
@@ -606,8 +689,11 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         bool requestNoCache = request.Headers.CacheControl?.NoCache == true
             || (request.Options.TryGetValue(CacheRequestPolicy.ForceRevalidate, out bool forceRevalidate) && forceRevalidate);
 
-        // Fresh cache hit — skip if client demands revalidation (§5.2.1.4), unless entry is immutable (RFC 8246)
-        if (entry is not null && !entry.IsExpired(_timeProvider) && (!requestNoCache || entry.Immutable))
+        // Fresh cache hit — skip if client demands revalidation (§5.2.1.4), unless entry is immutable (RFC 8246).
+        // A request's own max-age/min-fresh (§5.2.1.1, §5.2.1.3) can still tighten this even for an
+        // otherwise-fresh, even immutable, entry — see SatisfiesRequestFreshnessDirectives.
+        if (entry is not null && !entry.IsExpired(_timeProvider) && (!requestNoCache || entry.Immutable)
+            && SatisfiesRequestFreshnessDirectives(entry, request))
         {
             metrics?.RecordCacheHit(clientName: clientName);
             LogCacheHit(key);
@@ -632,7 +718,16 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             return CreateResponse(entry);
         }
 
-        // Stale entry (or no-cache demand) with a validator → conditional revalidation
+        // §5.2.1.2 — max-stale: the client accepts an expired entry directly, no origin contact.
+        if (entry is not null && !requestNoCache && entry.IsExpired(_timeProvider) && IsWithinRequestMaxStale(entry, request))
+        {
+            metrics?.RecordCacheHit(clientName: clientName);
+            LogMaxStaleServed(key);
+            return CreateResponse(entry);
+        }
+
+        // Stale entry (or no-cache demand, or an unmet request freshness directive) with a validator
+        // → conditional revalidation
         if (entry is not null && (entry.ETag is not null || entry.LastModified is not null))
         {
             // RFC 9111 §5.2.1.7 — only-if-cached: must not contact origin; return 504
@@ -724,11 +819,21 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         bool requestNoCache = request.Headers.CacheControl?.NoCache == true
             || (request.Options.TryGetValue(CacheRequestPolicy.ForceRevalidate, out bool force) && force);
 
-        // Fresh GET entry — serve headers with empty body; immutable entries ignore no-cache (RFC 8246)
-        if (entry is not null && !entry.IsExpired(_timeProvider) && (!requestNoCache || entry.Immutable))
+        // Fresh GET entry — serve headers with empty body; immutable entries ignore no-cache (RFC 8246).
+        // A request's own max-age/min-fresh can still tighten this — see SatisfiesRequestFreshnessDirectives.
+        if (entry is not null && !entry.IsExpired(_timeProvider) && (!requestNoCache || entry.Immutable)
+            && SatisfiesRequestFreshnessDirectives(entry, request))
         {
             metrics?.RecordCacheHit(HttpMethod.Head, clientName);
             LogCacheHit(getKey);
+            return CreateResponse(entry, includeBody: false);
+        }
+
+        // §5.2.1.2 — max-stale: the client accepts an expired GET entry directly, no origin contact.
+        if (entry is not null && !requestNoCache && entry.IsExpired(_timeProvider) && IsWithinRequestMaxStale(entry, request))
+        {
+            metrics?.RecordCacheHit(HttpMethod.Head, clientName);
+            LogMaxStaleServed(getKey);
             return CreateResponse(entry, includeBody: false);
         }
 
@@ -1101,6 +1206,9 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: serving stale-while-revalidate for {CacheKey}")]
     private partial void LogStaleWhileRevalidate(string cacheKey);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: serving expired entry for {CacheKey} within the request's max-stale directive")]
+    private partial void LogMaxStaleServed(string cacheKey);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Cache: background revalidation failed for {CacheKey}")]
     private partial void LogBackgroundRevalidationFailed(string cacheKey, Exception exception);
