@@ -99,6 +99,9 @@ Stampede.Http occupies a specific niche: **origin-controlled caching semantics i
 | `DefaultStaleWhileRevalidateSeconds` | `0` | Stale-while-revalidate window when the response carries no directive (`0` = disabled) |
 | `RevalidationGraceSeconds` | `300` | How long entries with an `ETag`/`Last-Modified` are kept in the store past freshness + stale windows, so expiry triggers a conditional `If-None-Match`/`If-Modified-Since` revalidation instead of a full refetch (`0` = evict at expiry) |
 | `NormalizeQueryParameters` | `false` | Sort query params before building the cache key, so `/items?b=2&a=1` and `/items?a=1&b=2` hit the same entry |
+| `EnableHeuristicFreshness` | `false` | RFC 9111 §4.2.2 heuristic freshness — estimate a TTL from `Last-Modified` (10% of its age by default) for responses with no `s-maxage`/`max-age`/`Expires` |
+| `HeuristicFreshnessFraction` | `0.1` | Fraction of the `Last-Modified` age used as the heuristic TTL, when enabled |
+| `MaxHeuristicFreshness` | `24h` | Upper bound on the heuristic TTL, when enabled |
 
 ### CoalescerOptions
 
@@ -257,6 +260,11 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## Changelog
+
+### v2.3.0
+- **Client request `Cache-Control` directives** (RFC 9111 §5.2.1) — `max-age` and `min-fresh` can now tighten what counts as a fresh cache hit even when the stored entry itself is still within its server-set freshness lifetime (falling through to conditional revalidation, or a full request, when unmet); `max-stale` (with or without a value) widens acceptance to serve an already-expired entry directly, without contacting the origin, as long as the entry doesn't carry `must-revalidate`/`proxy-revalidate` (§5.2.2.2). Applies to both `GET` and `HEAD`. `max-age`/`min-fresh` are honored even for `Immutable` (RFC 8246) entries — immutability only exempts a response from the *origin's* `no-cache` semantics, not a client's own recency requirement.
+- **Heuristic freshness** (RFC 9111 §4.2.2, opt-in via `EnableHeuristicFreshness`) — responses with a `Last-Modified` header but no `s-maxage`/`max-age`/`Expires` get an estimated freshness lifetime (`HeuristicFreshnessFraction` × age since `Last-Modified`, capped at `MaxHeuristicFreshness`) instead of always falling back to `DefaultTtl`. Disabled by default; enabling it does not change behavior for responses that already carry an explicit freshness directive.
+- **Metrics carry a `stampede_http.client_name` tag** on every instrument, identifying which named `HttpClient` a measurement came from. The default/unnamed client and the internal test constructors emit no tag, so existing totals for single-client setups are unaffected.
 
 ### v2.2.2
 - **~47% fewer allocations on the coalesced cache-miss path** (256 KB body / 8 waiters, measured): the caching layer now reuses the byte buffer the coalescer already materialized instead of reading it out again and rebuffering into a second `ByteArrayContent`. The saving scales with the number of coalesced waiters, since each used to pay for its own full copy of the response body.
