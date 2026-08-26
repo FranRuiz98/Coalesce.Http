@@ -56,7 +56,14 @@ internal sealed partial class RequestCoalescer(IOptionsMonitor<CoalescerOptions>
                             .ConfigureAwait(false);
 
                     LogCoalescedWaiterCompleted(key);
-                    return cachedResponse.ToHttpResponseMessage();
+
+                    HttpResponseMessage waiterResponse = cachedResponse.ToHttpResponseMessage();
+
+                    // This caller shared the winner's origin call instead of issuing its own — report it via
+                    // the synthetic status header. Only waiters are marked: the winner did hit the origin.
+                    StampedeCacheStatus.Set(waiterResponse, StampedeCacheStatus.Coalesced);
+
+                    return waiterResponse;
                 }
                 catch (TimeoutException)
                 {

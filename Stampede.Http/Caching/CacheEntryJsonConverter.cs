@@ -28,6 +28,8 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
         bool immutable = false;
         bool isVaryMarker = false;
         long originFetchDurationMs = 0;
+        string[] trackedKeys = [];
+        string[] tags = [];
 
         if (reader.TokenType != JsonTokenType.StartObject)
         {
@@ -96,6 +98,14 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
                 case nameof(CacheEntry.OriginFetchDurationMs):
                     originFetchDurationMs = reader.GetInt64();
                     break;
+                case nameof(CacheEntry.TrackedKeys):
+                    trackedKeys = JsonSerializer.Deserialize(ref reader,
+                        CacheEntryJsonContext.Default.StringArray) ?? [];
+                    break;
+                case nameof(CacheEntry.Tags):
+                    tags = JsonSerializer.Deserialize(ref reader,
+                        CacheEntryJsonContext.Default.StringArray) ?? [];
+                    break;
                 default:
                     reader.Skip();
                     break;
@@ -120,7 +130,9 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
             MustRevalidate = mustRevalidate,
             Immutable = immutable,
             IsVaryMarker = isVaryMarker,
-            OriginFetchDurationMs = originFetchDurationMs
+            OriginFetchDurationMs = originFetchDurationMs,
+            TrackedKeys = trackedKeys,
+            Tags = tags
         };
     }
 
@@ -166,6 +178,12 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
         writer.WriteBoolean(nameof(CacheEntry.Immutable), value.Immutable);
         writer.WriteBoolean(nameof(CacheEntry.IsVaryMarker), value.IsVaryMarker);
         writer.WriteNumber(nameof(CacheEntry.OriginFetchDurationMs), value.OriginFetchDurationMs);
+        writer.WritePropertyName(nameof(CacheEntry.TrackedKeys));
+        JsonSerializer.Serialize(writer, value.TrackedKeys,
+            CacheEntryJsonContext.Default.StringArray);
+        writer.WritePropertyName(nameof(CacheEntry.Tags));
+        JsonSerializer.Serialize(writer, value.Tags,
+            CacheEntryJsonContext.Default.StringArray);
 
         writer.WriteEndObject();
     }

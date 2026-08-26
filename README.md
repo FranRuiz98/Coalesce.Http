@@ -103,6 +103,7 @@ Stampede.Http occupies a specific niche: **origin-controlled caching semantics i
 | `HeuristicFreshnessFraction` | `0.1` | Fraction of the `Last-Modified` age used as the heuristic TTL, when enabled |
 | `MaxHeuristicFreshness` | `24h` | Upper bound on the heuristic TTL, when enabled |
 | `AuthorizationCaching` | `Never` | Whether requests carrying an `Authorization` header are cacheable — `Never`, `WhenPermittedByResponse` (RFC 9111 §3.5: requires `public`/`must-revalidate`/`s-maxage`), or `Always`. See [Caching authorized requests](#caching-authorized-requests) |
+| `TagHeaderNames` | `[]` | Response header names scanned for cache tags (e.g. `Cache-Tag`, `Surrogate-Key`, `xkey`), enabling group invalidation via `EvictByTagAsync`. See [Tag-based invalidation](#tag-based-invalidation) |
 | `EnableEarlyRevalidation` | `false` | XFetch: probabilistically refresh a fresh entry in the background ahead of its expiry. See [Early revalidation (XFetch)](#early-revalidation-xfetch) |
 | `EarlyRevalidationBeta` | `1.0` | Tuning parameter (β) scaling how far ahead of expiry early revalidation starts, in units of the entry's measured origin fetch duration |
 
@@ -143,7 +144,43 @@ await cache.EvictAsync(new Uri("https://api.example.com/products/42"));
 
 Or via constructor injection when there's a single registered client — the non-keyed `IStampedeHttpCache` falls back to the first-registered client, same as `ICacheStore`.
 
-Eviction targets one exact URI (the same key a GET to it would resolve to) — there's no prefix or pattern eviction, since `IDistributedCache` has no portable way to enumerate keys. It's unconditional and idempotent: evicting a URI with nothing cached is a no-op. If the evicted entry carried a `Vary` header, only the primary marker is removed; the secondary-key variants it pointed to become unreachable and expire on their own rather than being actively swept.
+URI eviction targets one exact URI (the same key a GET to it would resolve to) — there's no prefix or pattern eviction, since `IDistributedCache` has no portable way to enumerate keys; to invalidate a group of URIs in one call, use [tags](#tag-based-invalidation). Eviction is unconditional and idempotent: evicting a URI with nothing cached is a no-op. If the evicted entry carries a `Vary` header, its secondary-key variants are swept too — each variant's key is tracked on the primary marker as it's stored, so eviction follows the marker and removes all of them (best-effort: a variant that fell out of the tracked list just expires on its own instead).
+
+When [`AuthorizationCaching`](#caching-authorized-requests) is enabled, authenticated responses live under credential-scoped keys the URI overload can't reach. Pass the same `Authorization` value the cached request carried:
+
+```csharp
+await cache.EvictAsync(new Uri("https://api.example.com/products/42"),
+    new AuthenticationHeaderValue("Bearer", token));
+```
+
+---
+
+## Tag-based invalidation
+
+Evicting one URI at a time doesn't scale to "product 42 changed — drop its detail view, every list it appears in, and the search results mentioning it". Tags solve this the way CDNs do (Cloudflare's `Cache-Tag`, Fastly's `Surrogate-Key`, Varnish's `xkey`): the origin labels each response, and the client invalidates by label.
+
+Opt in by naming the response headers to scan:
+
+```csharp
+services.AddHttpClient("catalog")
+    .AddStampedeHttp(cache => cache.TagHeaderNames = ["Cache-Tag"]);
+```
+
+Any response stored with `Cache-Tag: products, product-42` (comma- or space-separated — both CDN conventions work) is indexed under each tag. One call then invalidates every entry carrying the tag, including their `Vary` variants:
+
+```csharp
+IStampedeHttpCache cache = serviceProvider.GetRequiredKeyedService<IStampedeHttpCache>("catalog");
+await cache.EvictByTagAsync("product-42");
+```
+
+When the origin doesn't emit tag headers, attach tags from the caller instead — `CacheRequestPolicy.Tags` works with `TagHeaderNames` unset:
+
+```csharp
+var request = new HttpRequestMessage(HttpMethod.Get, "/api/products/42");
+request.Options.Set(CacheRequestPolicy.Tags, ["product-42"]);
+```
+
+Tags are compared ordinally (case-sensitive). The index lives in the same `ICacheStore` as the entries — memory or distributed — with a retention that covers the longest-retained entry it tracks. Like `Vary` variant tracking, it's best-effort by design: the index is read-merge-write with no compare-and-swap, and capped at 1024 keys per tag, so under extreme concurrency or cardinality an entry can fall out of the index — it's then simply not swept by `EvictByTagAsync` and expires via its own freshness/validator rules; it is never served incorrectly.
 
 ---
 
@@ -164,7 +201,7 @@ services.AddHttpClient("catalog")
 
 Stampede.Http is a *private* cache (scoped to one process/`HttpClient`, never shared through a common proxy across principals), so returning a caller's own prior response to that same caller isn't the cross-user leak §3.5 guards against. What still has to hold is that *different* credentials are never mixed: whenever this isn't `Never`, both the cache key and the coalescing key fold in a hash of the `Authorization` value (never the raw value — it never appears in a key, a log line, or a distributed store's key listing), so two callers presenting different — or absent — credentials for the same URL always get independent entries and are never coalesced into one shared origin call. This protection in the coalescer is unconditional, independent of `AuthorizationCaching`: it also applies with `AddCoalescingOnly()`, with no caching in the pipeline at all.
 
-Two known limitations, both a direct consequence of `HEAD` and §4.4 invalidation resolving the plain, unauthenticated key for a URI (they have no credential of their own to scope by): an authenticated `HEAD` request won't hit its own `GET` entry's cache, and a successful `POST`/`PUT`/`DELETE` only invalidates the unauthenticated entry (if any) for that URL, not any per-credential ones — those expire on their own via normal freshness/validator rules, or can be evicted explicitly via [`IStampedeHttpCache`](#programmatic-eviction) if that's not enough.
+Two known limitations, both a direct consequence of `HEAD` and §4.4 invalidation resolving the plain, unauthenticated key for a URI (they have no credential of their own to scope by): an authenticated `HEAD` request won't hit its own `GET` entry's cache, and a successful `POST`/`PUT`/`DELETE` only invalidates the unauthenticated entry (if any) for that URL, not any per-credential ones — those expire on their own via normal freshness/validator rules, or can be evicted explicitly with the credential-scoped `EvictAsync(uri, authorization)` overload (see [Programmatic eviction](#programmatic-eviction)).
 
 ---
 
@@ -238,12 +275,34 @@ request.Options.Set(CacheRequestPolicy.BypassCache, true);
 | `BypassCache` | Skips all cache interaction — lookup, storage, and unsafe-method invalidation |
 | `ForceRevalidate` | Forces conditional revalidation even if the entry is fresh |
 | `NoStore` | Prevents the response from being stored; reads and revalidation still work |
+| `Tags` | Cache tags to index the stored response under, for group invalidation via `EvictByTagAsync` — honored even with `TagHeaderNames` unset. See [Tag-based invalidation](#tag-based-invalidation) |
 
 **Coalescing policy** (`CoalescingRequestPolicy`):
 
 | Key | Effect |
 |---|---|
 | `BypassCoalescing` | Forwards the request independently, bypassing deduplication |
+
+---
+
+## Cache status header
+
+Every response the caching layer handles carries a synthetic `X-Stampede-Cache` header reporting how it was obtained — the client-side equivalent of a CDN's `X-Cache`. Constants and a typed accessor live on `StampedeCacheStatus`:
+
+```csharp
+HttpResponseMessage response = await client.GetAsync("/api/products/42");
+string? status = StampedeCacheStatus.GetStatus(response); // "HIT", "MISS", ...
+```
+
+| Value | Meaning |
+|---|---|
+| `HIT` | Served from a fresh cache entry, no origin contact (includes locally answered conditional requests returning `304`) |
+| `STALE` | Served from an expired entry — `stale-while-revalidate`, `stale-if-error`, or the request's own `max-stale` |
+| `REVALIDATED` | Served from cache after the origin confirmed it unchanged with `304 Not Modified` |
+| `COALESCED` | Shared another concurrent caller's in-flight origin call instead of issuing its own |
+| `MISS` | Fetched from the origin — no usable cache entry |
+
+The header is absent when the caching layer didn't participate (unsafe methods, non-cacheable requests, `BypassCache`) — except `COALESCED`, which the coalescer sets on its own, so it also appears with `AddCoalescingOnly()`. It's set on the response handed back to the caller and never persisted: stored entries strip it, so a replayed hit always reports its own status. Handy in integration tests — assert `GetStatus(response) == StampedeCacheStatus.Hit` instead of instrumenting metrics or counting stub calls.
 
 ---
 
@@ -334,6 +393,12 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## Changelog
+
+### v2.6.0
+- **Tag-based invalidation (`IStampedeHttpCache.EvictByTagAsync`)** — responses can be labeled with cache tags, collected from the response headers named in `CacheOptions.TagHeaderNames` (`Cache-Tag`, `Surrogate-Key`, `xkey`… — comma- and space-separated values both work) or attached per request via `CacheRequestPolicy.Tags`; one call then evicts every entry carrying a tag, `Vary` variants included. The index lives in the client's own `ICacheStore` (memory or distributed) and is best-effort by design. Off by default: with `TagHeaderNames` unset and no request tags, nothing is indexed. See [Tag-based invalidation](#tag-based-invalidation).
+- **Explicit eviction sweeps `Vary` variants.** `EvictAsync` previously removed only the primary-key marker of a varying resource, leaving its secondary-key variants unreachable-but-alive until their own retention elapsed. Variant keys are now tracked on the marker (`CacheEntry.TrackedKeys`) as they're stored, and eviction removes them too. §4.4 invalidation is deliberately unchanged (its marker removal already made variants unreachable; the extra read per unsafe request wasn't worth it).
+- **Credential-scoped eviction (`EvictAsync(uri, authorization)`)** — closes the 2.4 limitation that per-credential entries stored under `AuthorizationCaching` couldn't be evicted programmatically: the new overload resolves the same credential-scoped key the authenticated GET stored under. The new `IStampedeHttpCache` members ship as default interface methods (throwing `NotSupportedException`), so custom pre-2.6 implementations keep compiling.
+- **Cache status header (`X-Stampede-Cache`)** — every response the caching layer handles now reports how it was obtained: `HIT`, `MISS`, `STALE`, `REVALIDATED`, or `COALESCED` (set by the coalescer for waiters that shared another caller's in-flight origin call). Constants and a typed accessor on `StampedeCacheStatus`; never persisted into stored entries. See [Cache status header](#cache-status-header).
 
 ### v2.5.0
 - **Coalescing non-GET requests (`CoalescerOptions.ShouldCoalesce`)** — opt specific `POST` (or other non-`GET`/`HEAD`) requests into coalescing, keyed on method + URL + a hash of the request body so two different bodies to the same URL are never merged. Buffering the body to hash it also makes it replayable for retry/hedging layers. Default remains unset — no method beyond `GET`/`HEAD` is ever coalesced unless explicitly matched. See [Coalescing non-GET requests](#coalescing-non-get-requests).

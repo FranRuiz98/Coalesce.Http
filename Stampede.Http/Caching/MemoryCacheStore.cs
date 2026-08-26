@@ -117,6 +117,16 @@ public sealed class MemoryCacheStore(IMemoryCache memoryCache, CacheOptions opti
             }
         }
 
+        foreach (string trackedKey in entry.TrackedKeys)
+        {
+            size += trackedKey.Length;
+        }
+
+        foreach (string tag in entry.Tags)
+        {
+            size += tag.Length;
+        }
+
         size += entry.ETag?.Length ?? 0;
 
         return size;

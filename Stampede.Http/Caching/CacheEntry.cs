@@ -72,6 +72,28 @@ public sealed record CacheEntry
     public bool IsVaryMarker { get; init; }
 
     /// <summary>
+    /// Cache keys this entry tracks when it acts as an index rather than (only) a stored response:
+    /// on a Vary marker (<see cref="IsVaryMarker"/>), the secondary-key variants stored under this
+    /// primary key, so explicit eviction can sweep them; on a tag index entry, the primary keys of the
+    /// responses carrying that tag. Empty on ordinary representations, and on entries written before 2.6.
+    /// </summary>
+    /// <remarks>
+    /// Best-effort by design: concurrent writers merging this list can lose a key, and the list is capped
+    /// (see <c>CacheIndexing.MaxTrackedKeys</c>) — an untracked key is never served incorrectly, it just
+    /// expires on its own retention schedule instead of being actively removed on eviction.
+    /// </remarks>
+    public string[] TrackedKeys { get; init; } = [];
+
+    /// <summary>
+    /// Cache tags this response was stored under, collected from the response headers named in
+    /// <see cref="CacheOptions.TagHeaderNames"/> and from <see cref="CacheRequestPolicy.Tags"/>.
+    /// Carried on the entry so every <c>304</c> refresh can re-extend the per-tag indexes to the entry's
+    /// new retention deadline — without this, a repeatedly revalidated entry would outlive its index and
+    /// silently stop being reachable by tag eviction. Empty when untagged, and on pre-2.6 entries.
+    /// </summary>
+    public string[] Tags { get; init; } = [];
+
+    /// <summary>
     /// Determines whether the cache entry has expired based on its expiration time.
     /// </summary>
     /// <returns>Returns <see langword="true"/> if the cache entry has expired; otherwise, <see langword="false"/>.</returns>

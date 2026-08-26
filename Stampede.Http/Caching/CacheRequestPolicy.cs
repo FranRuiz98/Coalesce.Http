@@ -34,4 +34,13 @@ public static class CacheRequestPolicy
     /// Cache reads, conditional revalidation, and 304 TTL refreshes still function normally.
     /// </summary>
     public static readonly HttpRequestOptionsKey<bool> NoStore = new("Stampede.Http.NoStore");
+
+    /// <summary>
+    /// Cache tags to index the stored response under, in addition to any collected from the response
+    /// headers named in <see cref="CacheOptions.TagHeaderNames"/>. Tagged entries can later be
+    /// invalidated as a group via <see cref="IStampedeHttpCache.EvictByTagAsync"/>. Tags are compared
+    /// ordinally (case-sensitive); entries that are not stored (non-cacheable responses, <see cref="NoStore"/>)
+    /// are never indexed.
+    /// </summary>
+    public static readonly HttpRequestOptionsKey<string[]> Tags = new("Stampede.Http.Tags");
 }
