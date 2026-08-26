@@ -280,11 +280,22 @@ public static class HttpClientBuilderExtensions
         builder.Services.TryAdd(
             ServiceDescriptor.KeyedSingleton<BackgroundRevalidationCoordinator>(clientName, (_, _) => new()));
 
+        // Per-client programmatic eviction (IStampedeHttpCache) — a thin wrapper over the two
+        // registrations above, resolved lazily so it always reflects whichever ICacheStore is current
+        // (e.g. after UseDistributedCacheStore() swaps it post-registration).
+        builder.Services.TryAdd(
+            ServiceDescriptor.KeyedSingleton<IStampedeHttpCache>(clientName, (sp, _) =>
+                new StampedeHttpCache(
+                    sp.GetRequiredKeyedService<ICacheStore>(clientName),
+                    sp.GetRequiredKeyedService<ICacheKeyBuilder>(clientName))));
+
         // Backward compatibility: non-keyed resolution returns the first-registered client's services.
         builder.Services.TryAddSingleton<ICacheKeyBuilder>(sp =>
             sp.GetRequiredKeyedService<ICacheKeyBuilder>(clientName));
         builder.Services.TryAddSingleton<ICacheStore>(sp =>
             sp.GetRequiredKeyedService<ICacheStore>(clientName));
+        builder.Services.TryAddSingleton<IStampedeHttpCache>(sp =>
+            sp.GetRequiredKeyedService<IStampedeHttpCache>(clientName));
 
         _ = builder.AddHttpMessageHandler(sp =>
             new CachingMiddleware(

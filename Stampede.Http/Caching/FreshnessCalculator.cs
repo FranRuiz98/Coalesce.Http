@@ -4,7 +4,8 @@ namespace Stampede.Http.Caching;
 
 /// <summary>
 /// Computes the freshness lifetime of an HTTP response according to RFC 9111 §4.2.1.
-/// Priority order: s-maxage → max-age → Expires → configured default TTL.
+/// Priority order: s-maxage → max-age → Expires → heuristic (Last-Modified, opt-in, §4.2.2) →
+/// configured default TTL.
 /// </summary>
 internal static class FreshnessCalculator
 {
@@ -43,7 +44,29 @@ internal static class FreshnessCalculator
             return now + (age > TimeSpan.Zero ? age : TimeSpan.Zero);
         }
 
-        // §4.2.2 — heuristic / configured default
+        // §4.2.2 — heuristic freshness from Last-Modified, opt-in. The classic heuristic treats a
+        // fraction of the time since the representation last changed as a reasonable freshness
+        // lifetime: a resource that has gone a long time between changes is likely to stay unchanged
+        // a while longer. Skipped when Last-Modified is missing, in the future relative to Date, or
+        // equal to it (zero elapsed time yields no useful signal) — those all fall through to DefaultTtl.
+        if (options.EnableHeuristicFreshness && response.Content?.Headers.LastModified is DateTimeOffset lastModified)
+        {
+            DateTimeOffset date = response.Headers.Date ?? now;
+            TimeSpan sinceModified = date - lastModified;
+
+            if (sinceModified > TimeSpan.Zero)
+            {
+                TimeSpan heuristic = sinceModified * options.HeuristicFreshnessFraction;
+                if (heuristic > options.MaxHeuristicFreshness)
+                {
+                    heuristic = options.MaxHeuristicFreshness;
+                }
+
+                return now + heuristic;
+            }
+        }
+
+        // §4.2.2 — no heuristic applicable: configured default
         return now + options.DefaultTtl;
     }
 

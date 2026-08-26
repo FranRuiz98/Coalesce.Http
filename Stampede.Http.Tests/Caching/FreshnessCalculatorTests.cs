@@ -120,6 +120,132 @@ public sealed class FreshnessCalculatorTests
         result.Should().BeCloseTo(before + TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(2));
     }
 
+    // ── Heuristic freshness (§4.2.2, opt-in) ─────────────────────────────────
+
+    [Fact]
+    public void ComputeExpiresAt_HeuristicDisabled_LastModifiedIgnored_FallsBackToDefaultTtl()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+        response.Headers.Date = now;
+        response.Content.Headers.LastModified = now - TimeSpan.FromDays(10);
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        DateTimeOffset result = FreshnessCalculator.ComputeExpiresAt(response, _defaultOptions);
+
+        // EnableHeuristicFreshness defaults to false — pre-2.3 behavior is unchanged.
+        result.Should().BeCloseTo(before + TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void ComputeExpiresAt_HeuristicEnabled_UsesTenPercentOfLastModifiedAge()
+    {
+        var options = new CacheOptions { EnableHeuristicFreshness = true };
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+        response.Headers.Date = now;
+        response.Content.Headers.LastModified = now - TimeSpan.FromHours(100);
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        DateTimeOffset result = FreshnessCalculator.ComputeExpiresAt(response, options);
+
+        // 10% of 100h = 10h, well under the 24h cap.
+        result.Should().BeCloseTo(before + TimeSpan.FromHours(10), TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void ComputeExpiresAt_HeuristicEnabled_CustomFraction_IsRespected()
+    {
+        var options = new CacheOptions { EnableHeuristicFreshness = true, HeuristicFreshnessFraction = 0.5 };
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+        response.Headers.Date = now;
+        response.Content.Headers.LastModified = now - TimeSpan.FromHours(10);
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        DateTimeOffset result = FreshnessCalculator.ComputeExpiresAt(response, options);
+
+        result.Should().BeCloseTo(before + TimeSpan.FromHours(5), TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void ComputeExpiresAt_HeuristicEnabled_ResultCappedAtMaxHeuristicFreshness()
+    {
+        var options = new CacheOptions
+        {
+            EnableHeuristicFreshness = true,
+            MaxHeuristicFreshness = TimeSpan.FromHours(1)
+        };
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+        response.Headers.Date = now;
+        response.Content.Headers.LastModified = now - TimeSpan.FromDays(365); // 10% would be ~36.5h
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        DateTimeOffset result = FreshnessCalculator.ComputeExpiresAt(response, options);
+
+        result.Should().BeCloseTo(before + TimeSpan.FromHours(1), TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void ComputeExpiresAt_HeuristicEnabled_NoLastModified_FallsBackToDefaultTtl()
+    {
+        var options = new CacheOptions { EnableHeuristicFreshness = true };
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        DateTimeOffset result = FreshnessCalculator.ComputeExpiresAt(response, options);
+
+        result.Should().BeCloseTo(before + TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void ComputeExpiresAt_HeuristicEnabled_LastModifiedInFuture_FallsBackToDefaultTtl()
+    {
+        var options = new CacheOptions { EnableHeuristicFreshness = true };
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+        response.Headers.Date = now;
+        response.Content.Headers.LastModified = now + TimeSpan.FromHours(1); // clock skew / bad origin data
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        DateTimeOffset result = FreshnessCalculator.ComputeExpiresAt(response, options);
+
+        result.Should().BeCloseTo(before + TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void ComputeExpiresAt_HeuristicEnabled_NoDateHeader_UsesNowAsFallback()
+    {
+        var options = new CacheOptions { EnableHeuristicFreshness = true };
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+        // No Date header set — falls back to "now" as the reception time (§4.2.2).
+        response.Content.Headers.LastModified = now - TimeSpan.FromHours(20);
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        DateTimeOffset result = FreshnessCalculator.ComputeExpiresAt(response, options);
+
+        // 10% of ~20h ≈ 2h
+        result.Should().BeCloseTo(before + TimeSpan.FromHours(2), TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void ComputeExpiresAt_HeuristicEnabled_MaxAgeStillTakesPriority()
+    {
+        var options = new CacheOptions { EnableHeuristicFreshness = true };
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("body") };
+        response.Headers.CacheControl = new CacheControlHeaderValue { MaxAge = TimeSpan.FromSeconds(45) };
+        response.Headers.Date = now;
+        response.Content.Headers.LastModified = now - TimeSpan.FromDays(30);
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        DateTimeOffset result = FreshnessCalculator.ComputeExpiresAt(response, options);
+
+        result.Should().BeCloseTo(before + TimeSpan.FromSeconds(45), TimeSpan.FromSeconds(2));
+    }
+
     // ── ExtractStaleIfError ───────────────────────────────────────────────────
 
     [Fact]

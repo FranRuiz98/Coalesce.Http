@@ -15,6 +15,8 @@ public sealed class CacheOptions
     private long _defaultStaleWhileRevalidateSeconds;
     private long? _maxCacheSize;
     private long _revalidationGraceSeconds = 300;
+    private double _heuristicFreshnessFraction = 0.1;
+    private TimeSpan _maxHeuristicFreshness = TimeSpan.FromHours(24);
 
     /// <summary>
     /// Gets or sets the default time-to-live (TTL) duration for cache entries.
@@ -142,4 +144,117 @@ public sealed class CacheOptions
     /// Default is <see langword="false"/>.
     /// </remarks>
     public bool NormalizeQueryParameters { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether heuristic freshness (RFC 9111 §4.2.2) is applied to responses that carry
+    /// a <c>Last-Modified</c> header but no explicit freshness signal (<c>s-maxage</c>, <c>max-age</c>,
+    /// or <c>Expires</c>).
+    /// </summary>
+    /// <remarks>
+    /// When enabled, the freshness lifetime is estimated as
+    /// <see cref="HeuristicFreshnessFraction"/> of the time elapsed between <c>Last-Modified</c> and
+    /// the response's <c>Date</c> (or the moment it was received, when <c>Date</c> is absent) — the
+    /// classic "10% of age" heuristic recommended by §4.2.2 — capped at
+    /// <see cref="MaxHeuristicFreshness"/>. When disabled (the default), responses without an explicit
+    /// freshness signal fall straight through to <see cref="DefaultTtl"/>, matching pre-2.3 behavior.
+    /// </remarks>
+    public bool EnableHeuristicFreshness { get; set; }
+
+    /// <summary>
+    /// Gets or sets the fraction of a response's <c>Last-Modified</c> age used as its heuristic
+    /// freshness lifetime, when <see cref="EnableHeuristicFreshness"/> is <see langword="true"/>.
+    /// Default is <c>0.1</c> (10%), the value suggested by RFC 9111 §4.2.2.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is not positive.</exception>
+    public double HeuristicFreshnessFraction
+    {
+        get => _heuristicFreshnessFraction;
+        set
+        {
+            if (value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "HeuristicFreshnessFraction must be positive.");
+            }
+
+            _heuristicFreshnessFraction = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the upper bound on the freshness lifetime computed by
+    /// <see cref="EnableHeuristicFreshness"/>. Default is 24 hours, matching common browser heuristics.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is less than or equal to <see cref="TimeSpan.Zero"/>.</exception>
+    public TimeSpan MaxHeuristicFreshness
+    {
+        get => _maxHeuristicFreshness;
+        set
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "MaxHeuristicFreshness must be positive.");
+            }
+
+            _maxHeuristicFreshness = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets whether requests carrying an <c>Authorization</c> header are eligible for caching.
+    /// Default is <see cref="AuthorizationCachingMode.Never"/> — matches pre-2.4 behavior.
+    /// </summary>
+    /// <remarks>
+    /// See <see cref="AuthorizationCachingMode"/> for the safety model: whenever this is not
+    /// <see cref="AuthorizationCachingMode.Never"/>, the cache key and the coalescing key both fold in a
+    /// hash of the <c>Authorization</c> value so different credentials are never mixed.
+    /// </remarks>
+    public AuthorizationCachingMode AuthorizationCaching { get; set; } = AuthorizationCachingMode.Never;
+
+    /// <summary>
+    /// Gets or sets whether fresh cache hits probabilistically trigger a background refresh ahead of
+    /// their expiry (XFetch — Vattani, Padmanabhan &amp; Gionis, "Optimal Probabilistic Cache
+    /// Stampede Prevention", 2015). Default is <see langword="false"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This targets a different failure mode than <c>stale-while-revalidate</c>: that mechanism reacts
+    /// once an entry has <em>already</em> gone stale; this one spreads out <em>when</em> different
+    /// callers or process instances refresh a not-yet-expired entry, so they don't all decide to refetch
+    /// it in the same instant it expires. The probability of triggering rises the closer the entry is to
+    /// <see cref="CacheEntry.ExpiresAt"/>, scaled by how expensive the entry was to fetch
+    /// (<see cref="CacheEntry.OriginFetchDurationMs"/>) via <see cref="EarlyRevalidationBeta"/> — cheap
+    /// entries are refreshed right up against expiry, expensive ones start earlier.
+    /// </para>
+    /// <para>
+    /// The refresh runs through the same <see cref="BackgroundRevalidationCoordinator"/> as
+    /// <c>stale-while-revalidate</c>, so at most one runs per key at a time regardless of how many
+    /// concurrent hits trigger it. The response that triggered it is unaffected either way — this only
+    /// ever adds a background side effect to an otherwise-normal fresh hit.
+    /// </para>
+    /// </remarks>
+    public bool EnableEarlyRevalidation { get; set; }
+
+    private double _earlyRevalidationBeta = 1.0;
+
+    /// <summary>
+    /// Gets or sets the tuning parameter (<c>β</c>) controlling how far ahead of expiry
+    /// <see cref="EnableEarlyRevalidation"/> starts refreshing an entry, in units of its measured origin
+    /// fetch duration. The expected lead time before expiry is <c>OriginFetchDurationMs × β</c>; higher
+    /// values refresh earlier and more often, at the cost of more background origin calls. Default is
+    /// <c>1.0</c>, the value used in the XFetch paper's evaluation.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is not positive.</exception>
+    public double EarlyRevalidationBeta
+    {
+        get => _earlyRevalidationBeta;
+        set
+        {
+            if (value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "EarlyRevalidationBeta must be positive.");
+            }
+
+            _earlyRevalidationBeta = value;
+        }
+    }
 }

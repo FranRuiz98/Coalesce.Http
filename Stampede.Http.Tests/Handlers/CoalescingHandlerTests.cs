@@ -282,6 +282,77 @@ public class CoalescingHandlerTests
         _innerHandler.CallCount.Should().Be(1, "requests GET idénticos con query parameters deberían coalescerse");
     }
 
+    // ── Authorization credential isolation (2.4) ─────────────────────────────
+    //
+    // Independent of CacheOptions.AuthorizationCaching (a caching-layer setting): the coalescer must
+    // never merge two different credentials' concurrent requests into one shared origin response, whether
+    // or not caching is even in the pipeline.
+
+    [Fact]
+    public async Task SendAsync_ConcurrentRequestsWithDifferentAuthorization_ShouldNotCoalesce()
+    {
+        var url = "https://api.example.com/data";
+        var invoker = new HttpMessageInvoker(_handler);
+
+        _innerHandler.Delay = TimeSpan.FromMilliseconds(100);
+
+        var requestA = new HttpRequestMessage(HttpMethod.Get, url);
+        requestA.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "token-a");
+
+        var requestB = new HttpRequestMessage(HttpMethod.Get, url);
+        requestB.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "token-b");
+
+        var taskA = invoker.SendAsync(requestA, CancellationToken.None);
+        var taskB = invoker.SendAsync(requestB, CancellationToken.None);
+
+        await Task.WhenAll(taskA, taskB);
+
+        _innerHandler.CallCount.Should().Be(2, "two different credentials must never share one coalesced origin call");
+    }
+
+    [Fact]
+    public async Task SendAsync_ConcurrentRequestsWithSameAuthorization_ShouldCoalesce()
+    {
+        var url = "https://api.example.com/data";
+        var invoker = new HttpMessageInvoker(_handler);
+
+        _innerHandler.Delay = TimeSpan.FromMilliseconds(100);
+
+        var requestA = new HttpRequestMessage(HttpMethod.Get, url);
+        requestA.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "token-a");
+
+        var requestB = new HttpRequestMessage(HttpMethod.Get, url);
+        requestB.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "token-a");
+
+        var taskA = invoker.SendAsync(requestA, CancellationToken.None);
+        var taskB = invoker.SendAsync(requestB, CancellationToken.None);
+
+        await Task.WhenAll(taskA, taskB);
+
+        _innerHandler.CallCount.Should().Be(1, "identical credentials for the same URL are still coalesceable");
+    }
+
+    [Fact]
+    public async Task SendAsync_ConcurrentRequestsWithAndWithoutAuthorization_ShouldNotCoalesce()
+    {
+        var url = "https://api.example.com/data";
+        var invoker = new HttpMessageInvoker(_handler);
+
+        _innerHandler.Delay = TimeSpan.FromMilliseconds(100);
+
+        var authorized = new HttpRequestMessage(HttpMethod.Get, url);
+        authorized.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "token-a");
+
+        var anonymous = new HttpRequestMessage(HttpMethod.Get, url);
+
+        var task1 = invoker.SendAsync(authorized, CancellationToken.None);
+        var task2 = invoker.SendAsync(anonymous, CancellationToken.None);
+
+        await Task.WhenAll(task1, task2);
+
+        _innerHandler.CallCount.Should().Be(2, "an authenticated caller must never be coalesced together with an anonymous one");
+    }
+
     private class TestMessageHandler : HttpMessageHandler
     {
         public int CallCount { get; private set; }

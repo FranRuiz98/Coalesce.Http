@@ -153,4 +153,66 @@ public class RequestKeyTests
         // Assert
         key.Url.Should().Be("https://api.example.com/page#section");
     }
+
+    // ── Authorization credential isolation (2.4) ─────────────────────────────
+    //
+    // These use the (request, keyHeaders) overload: Authorization is folded in unconditionally there,
+    // independent of CacheOptions.AuthorizationCaching — coalescing must never merge two different
+    // credentials' requests into one shared origin call, whether or not caching itself is enabled.
+
+    [Fact]
+    public void Create_WithKeyHeaders_DifferentAuthorizationValues_ProduceDifferentKeys()
+    {
+        using var request1 = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+        request1.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "user-a-token");
+
+        using var request2 = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+        request2.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "user-b-token");
+
+        RequestKey key1 = RequestKey.Create(request1, keyHeaders: null);
+        RequestKey key2 = RequestKey.Create(request2, keyHeaders: null);
+
+        key1.Should().NotBe(key2, "two different credentials for the same URL must never be coalesced together");
+    }
+
+    [Fact]
+    public void Create_WithKeyHeaders_SameAuthorizationValue_ProducesSameKey()
+    {
+        using var request1 = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+        request1.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "user-a-token");
+
+        using var request2 = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+        request2.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "user-a-token");
+
+        RequestKey key1 = RequestKey.Create(request1, keyHeaders: null);
+        RequestKey key2 = RequestKey.Create(request2, keyHeaders: null);
+
+        key1.Should().Be(key2, "identical credentials for the same URL are still coalesceable");
+    }
+
+    [Fact]
+    public void Create_WithKeyHeaders_AuthorizationHash_NeverContainsRawCredential()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "super-secret-token");
+
+        RequestKey key = RequestKey.Create(request, keyHeaders: null);
+
+        key.ToString().Should().NotContain("super-secret-token",
+            "the raw credential must never surface in RequestKey.ToString(), which feeds debug log lines");
+    }
+
+    [Fact]
+    public void Create_WithKeyHeaders_AuthorizedAndUnauthorizedRequests_ProduceDifferentKeys()
+    {
+        using var authorized = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+        authorized.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "token");
+
+        using var anonymous = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
+
+        RequestKey authorizedKey = RequestKey.Create(authorized, keyHeaders: null);
+        RequestKey anonymousKey = RequestKey.Create(anonymous, keyHeaders: null);
+
+        authorizedKey.Should().NotBe(anonymousKey);
+    }
 }

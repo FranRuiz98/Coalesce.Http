@@ -27,6 +27,7 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
         bool mustRevalidate = false;
         bool immutable = false;
         bool isVaryMarker = false;
+        long originFetchDurationMs = 0;
 
         if (reader.TokenType != JsonTokenType.StartObject)
         {
@@ -92,6 +93,9 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
                 case nameof(CacheEntry.IsVaryMarker):
                     isVaryMarker = reader.GetBoolean();
                     break;
+                case nameof(CacheEntry.OriginFetchDurationMs):
+                    originFetchDurationMs = reader.GetInt64();
+                    break;
                 default:
                     reader.Skip();
                     break;
@@ -115,7 +119,8 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
             StaleWhileRevalidateSeconds = staleWhileRevalidateSeconds,
             MustRevalidate = mustRevalidate,
             Immutable = immutable,
-            IsVaryMarker = isVaryMarker
+            IsVaryMarker = isVaryMarker,
+            OriginFetchDurationMs = originFetchDurationMs
         };
     }
 
@@ -160,6 +165,7 @@ internal sealed class CacheEntryJsonConverter : JsonConverter<CacheEntry>
         writer.WriteBoolean(nameof(CacheEntry.MustRevalidate), value.MustRevalidate);
         writer.WriteBoolean(nameof(CacheEntry.Immutable), value.Immutable);
         writer.WriteBoolean(nameof(CacheEntry.IsVaryMarker), value.IsVaryMarker);
+        writer.WriteNumber(nameof(CacheEntry.OriginFetchDurationMs), value.OriginFetchDurationMs);
 
         writer.WriteEndObject();
     }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
 namespace Stampede.Http.Metrics;
@@ -7,6 +8,13 @@ namespace Stampede.Http.Metrics;
 /// </summary>
 /// <remarks>
 /// <para>Meter name: <c>Stampede.Http</c></para>
+/// <para>
+/// Every instrument is tagged with <c>stampede_http.client_name</c> — the name of the
+/// <c>HttpClient</c> the measurement came from (as passed to <c>IHttpClientFactory.CreateClient</c>)
+/// — whenever the middleware was registered against a named client. The default/unnamed client and
+/// the parameterless test constructors emit no tag, so this is purely additive: existing consumers
+/// that don't filter or group by it see identical totals.
+/// </para>
 /// <para>Instruments emitted:</para>
 /// <list type="table">
 ///   <item><term>stampede_http.cache.hits</term><description>Requests served directly from cache.</description></item>
@@ -14,6 +22,7 @@ namespace Stampede.Http.Metrics;
 ///   <item><term>stampede_http.cache.revalidations</term><description>Conditional revalidation requests (If-None-Match / If-Modified-Since).</description></item>
 ///   <item><term>stampede_http.cache.stale_errors_served</term><description>Stale responses served under stale-if-error (RFC 5861).</description></item>
 ///   <item><term>stampede_http.cache.stale_while_revalidate_served</term><description>Stale responses served immediately while a background revalidation was triggered (RFC 5861).</description></item>
+///   <item><term>stampede_http.cache.early_revalidations_triggered</term><description>Fresh hits that probabilistically triggered a background refresh ahead of expiry (XFetch).</description></item>
 ///   <item><term>stampede_http.cache.invalidations</term><description>Cache invalidations issued after successful unsafe method responses (RFC 9111 §4.4).</description></item>
 ///   <item><term>stampede_http.coalescing.deduplicated</term><description>Requests that reused an in-flight coalesced response.</description></item>
 ///   <item><term>stampede_http.coalescing.inflight</term><description>Current number of in-flight coalesced requests at the origin.</description></item>
@@ -26,12 +35,16 @@ public sealed class StampedeHttpMetrics : IDisposable
     /// <summary>Name of the <see cref="Meter"/> published by this library.</summary>
     public const string MeterName = "Stampede.Http";
 
+    /// <summary>Tag key carrying the named <c>HttpClient</c> a measurement originated from.</summary>
+    private const string ClientNameTagKey = "stampede_http.client_name";
+
     private readonly Meter _meter;
     private readonly Counter<long> _cacheHits;
     private readonly Counter<long> _cacheMisses;
     private readonly Counter<long> _cacheRevalidations;
     private readonly Counter<long> _staleErrorsServed;
     private readonly Counter<long> _staleWhileRevalidateServed;
+    private readonly Counter<long> _earlyRevalidationsTriggered;
     private readonly Counter<long> _cacheInvalidations;
     private readonly Counter<long> _coalescedDeduplicated;
     private readonly UpDownCounter<long> _coalescedInflight;
@@ -67,6 +80,11 @@ public sealed class StampedeHttpMetrics : IDisposable
             unit: "requests",
             description: "Number of stale responses served immediately while a background revalidation was triggered (RFC 5861 §3).");
 
+        _earlyRevalidationsTriggered = _meter.CreateCounter<long>(
+            "stampede_http.cache.early_revalidations_triggered",
+            unit: "requests",
+            description: "Number of fresh hits that probabilistically triggered a background refresh ahead of expiry (XFetch).");
+
         _cacheInvalidations = _meter.CreateCounter<long>(
             "stampede_http.cache.invalidations",
             unit: "entries",
@@ -88,31 +106,60 @@ public sealed class StampedeHttpMetrics : IDisposable
             description: "Number of coalesced waiters that timed out and fell back to independent execution.");
     }
 
-    internal void RecordCacheHit(HttpMethod? method = null)
+    /// <summary>
+    /// Builds the tag set for a measurement: the HTTP method (when known) and the named client
+    /// (when set). <see cref="TagList"/> is a stack-allocated struct for up to three inline tags, so
+    /// this adds no heap allocation on the hot path for the common 0–2 tag case.
+    /// </summary>
+    private static TagList BuildTags(HttpMethod? method, string? clientName)
     {
-        if (method is null)
-            _cacheHits.Add(1);
-        else
-            _cacheHits.Add(1, new KeyValuePair<string, object?>("http.request.method", method.Method));
+        TagList tags = default;
+
+        if (method is not null)
+        {
+            tags.Add("http.request.method", method.Method);
+        }
+
+        if (!string.IsNullOrEmpty(clientName))
+        {
+            tags.Add(ClientNameTagKey, clientName);
+        }
+
+        return tags;
     }
 
-    internal void RecordCacheMiss() => _cacheMisses.Add(1);
+    internal void RecordCacheHit(HttpMethod? method = null, string? clientName = null) =>
+        _cacheHits.Add(1, BuildTags(method, clientName));
 
-    internal void RecordRevalidation(HttpMethod? method = null)
-    {
-        if (method is null)
-            _cacheRevalidations.Add(1);
-        else
-            _cacheRevalidations.Add(1, new KeyValuePair<string, object?>("http.request.method", method.Method));
-    }
+    internal void RecordCacheMiss(string? clientName = null) =>
+        _cacheMisses.Add(1, BuildTags(method: null, clientName));
 
-    internal void RecordStaleErrorServed() => _staleErrorsServed.Add(1);
-    internal void RecordStaleWhileRevalidateServed() => _staleWhileRevalidateServed.Add(1);
-    internal void RecordCacheInvalidation() => _cacheInvalidations.Add(1);
-    internal void RecordCoalescedDeduplicated() => _coalescedDeduplicated.Add(1);
-    internal void IncrementInflight() => _coalescedInflight.Add(1);
-    internal void DecrementInflight() => _coalescedInflight.Add(-1);
-    internal void RecordCoalescingTimeout() => _coalescedTimeouts.Add(1);
+    internal void RecordRevalidation(HttpMethod? method = null, string? clientName = null) =>
+        _cacheRevalidations.Add(1, BuildTags(method, clientName));
+
+    internal void RecordStaleErrorServed(string? clientName = null) =>
+        _staleErrorsServed.Add(1, BuildTags(method: null, clientName));
+
+    internal void RecordStaleWhileRevalidateServed(string? clientName = null) =>
+        _staleWhileRevalidateServed.Add(1, BuildTags(method: null, clientName));
+
+    internal void RecordEarlyRevalidationTriggered(string? clientName = null) =>
+        _earlyRevalidationsTriggered.Add(1, BuildTags(method: null, clientName));
+
+    internal void RecordCacheInvalidation(string? clientName = null) =>
+        _cacheInvalidations.Add(1, BuildTags(method: null, clientName));
+
+    internal void RecordCoalescedDeduplicated(string? clientName = null) =>
+        _coalescedDeduplicated.Add(1, BuildTags(method: null, clientName));
+
+    internal void IncrementInflight(string? clientName = null) =>
+        _coalescedInflight.Add(1, BuildTags(method: null, clientName));
+
+    internal void DecrementInflight(string? clientName = null) =>
+        _coalescedInflight.Add(-1, BuildTags(method: null, clientName));
+
+    internal void RecordCoalescingTimeout(string? clientName = null) =>
+        _coalescedTimeouts.Add(1, BuildTags(method: null, clientName));
 
     /// <inheritdoc/>
     public void Dispose() => _meter.Dispose();

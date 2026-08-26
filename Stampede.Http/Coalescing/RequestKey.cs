@@ -1,4 +1,6 @@
-﻿using System.Buffers;
+﻿using Stampede.Http.Internal;
+using System.Buffers;
+using System.Security.Cryptography;
 
 namespace Stampede.Http.Coalescing;
 
@@ -41,18 +43,96 @@ internal readonly record struct RequestKey(string Method, string Url, string Hea
     {
         bool hasKeyHeaders = keyHeaders is not null && keyHeaders.Count > 0;
         bool hasConditional = HasConditionalHeaders(request);
+        string? authHash = CredentialHash.OfAuthorization(request.Headers.Authorization);
 
-        if (!hasKeyHeaders && !hasConditional)
+        if (!hasKeyHeaders && !hasConditional && authHash is null)
         {
             return Create(request);
         }
 
         IReadOnlyList<string> effectiveHeaders = hasConditional
             ? MergeConditionalHeaders(keyHeaders, request)
-            : keyHeaders!;
+            : keyHeaders ?? [];
 
         string headersKey = BuildHeadersKey(request, effectiveHeaders);
+
+        // Authorization is always folded in as a hash — independent of CacheOptions.AuthorizationCaching,
+        // which governs the caching layer, not this one. Two callers presenting different (or no)
+        // credentials for the same URL must never be coalesced into a single shared origin response, even
+        // when caching itself is off (AddCoalescingOnly) or set to never cache authorized responses. The
+        // hash, not the raw value, keeps this out of the debug logs that key.ToString() feeds.
+        if (authHash is not null)
+        {
+            headersKey = string.Concat(headersKey, "auth=", authHash, ";");
+        }
+
         return new RequestKey(request.Method.Method, request.RequestUri!.AbsoluteUri, headersKey);
+    }
+
+    /// <summary>
+    /// Creates a key for a method other than <c>GET</c>/<c>HEAD</c> matched by
+    /// <see cref="Options.CoalescerOptions.ShouldCoalesce"/>, additionally discriminating by the request
+    /// body's content — two requests to the same URL are the same coalesceable operation only if their
+    /// bodies are identical too.
+    /// </summary>
+    /// <param name="request">The HTTP request to key. Its content, if any, is buffered as a side effect.</param>
+    /// <param name="keyHeaders">Same as in <see cref="Create(HttpRequestMessage, IReadOnlyList{string})"/>.</param>
+    /// <param name="maxBodyBytes">
+    /// The most that will be buffered to hash the body. A larger (or unknown-and-overflowing) body is not
+    /// an error here: it is the caller's signal to execute that request independently instead.
+    /// </param>
+    /// <param name="ct">Cancels buffering the body. Never propagated to the eventual origin call.</param>
+    /// <returns>
+    /// The key, or <see langword="null"/> when the request carries a body larger than
+    /// <paramref name="maxBodyBytes"/> — the caller should execute that request without coalescing.
+    /// </returns>
+    public static async Task<RequestKey?> CreateWithBodyAsync(
+        HttpRequestMessage request,
+        IReadOnlyList<string>? keyHeaders,
+        long maxBodyBytes,
+        CancellationToken ct)
+    {
+        RequestKey baseKey = Create(request, keyHeaders);
+
+        if (request.Content is null)
+        {
+            return baseKey;
+        }
+
+        long? declaredLength = request.Content.Headers.ContentLength;
+        if (declaredLength > maxBodyBytes)
+        {
+            return null;
+        }
+
+        byte[] body;
+        try
+        {
+            // Buffering here is a deliberate side effect beyond hashing: whatever sends this request next —
+            // the coalescer's factory, and any Polly retry/hedging layered outside it — reads from an
+            // already-materialized buffer instead of a live stream, making the body replayable the same way
+            // a coalesced GET's response already is.
+#if NET9_0_OR_GREATER
+            await request.Content.LoadIntoBufferAsync(maxBodyBytes, ct).ConfigureAwait(false);
+#else
+            // No CancellationToken overload of LoadIntoBufferAsync(long) on net8.0 — acceptable given this
+            // step is bounded by maxBodyBytes and expected to be fast; ReadAsByteArrayAsync below still
+            // observes ct.
+            await request.Content.LoadIntoBufferAsync(maxBodyBytes).ConfigureAwait(false);
+#endif
+            body = await request.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        }
+        catch (HttpRequestException)
+        {
+            // Thrown by LoadIntoBufferAsync when a body with no declared Content-Length turns out to exceed
+            // maxBodyBytes once actually read.
+            return null;
+        }
+
+        string bodyHash = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
+        string headersKey = string.Concat(baseKey.HeadersKey, "body=", bodyHash, ";");
+
+        return new RequestKey(baseKey.Method, baseKey.Url, headersKey);
     }
 
     /// <summary>Returns <see langword="true"/> when the request carries any conditional header (RFC 9110 §13).</summary>

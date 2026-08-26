@@ -40,7 +40,8 @@ public sealed class CacheEntryJsonConverterTests
             StaleIfErrorSeconds = 300,
             StaleWhileRevalidateSeconds = 60,
             MustRevalidate = true,
-            IsVaryMarker = true
+            IsVaryMarker = true,
+            OriginFetchDurationMs = 245
         };
 
         string json = JsonSerializer.Serialize(original, CacheEntryJsonContext.Default.CacheEntry);
@@ -60,6 +61,7 @@ public sealed class CacheEntryJsonConverterTests
         restored.StaleWhileRevalidateSeconds.Should().Be(original.StaleWhileRevalidateSeconds);
         restored.MustRevalidate.Should().Be(original.MustRevalidate);
         restored.IsVaryMarker.Should().Be(original.IsVaryMarker);
+        restored.OriginFetchDurationMs.Should().Be(original.OriginFetchDurationMs);
     }
 
     // ── Optional fields default to null/default when absent ──────────────────
@@ -87,6 +89,7 @@ public sealed class CacheEntryJsonConverterTests
         entry.StaleIfErrorSeconds.Should().Be(0);
         entry.StaleWhileRevalidateSeconds.Should().Be(0);
         entry.MustRevalidate.Should().BeFalse();
+        entry.OriginFetchDurationMs.Should().Be(0, "a pre-2.5 entry serialized without this field must deserialize with the safe default");
     }
 
     // ── Explicit null ETag/LastModified round-trips correctly ─────────────────
