@@ -102,6 +102,7 @@ Stampede.Http occupies a specific niche: **origin-controlled caching semantics i
 | `EnableHeuristicFreshness` | `false` | RFC 9111 §4.2.2 heuristic freshness — estimate a TTL from `Last-Modified` (10% of its age by default) for responses with no `s-maxage`/`max-age`/`Expires` |
 | `HeuristicFreshnessFraction` | `0.1` | Fraction of the `Last-Modified` age used as the heuristic TTL, when enabled |
 | `MaxHeuristicFreshness` | `24h` | Upper bound on the heuristic TTL, when enabled |
+| `AuthorizationCaching` | `Never` | Whether requests carrying an `Authorization` header are cacheable — `Never`, `WhenPermittedByResponse` (RFC 9111 §3.5: requires `public`/`must-revalidate`/`s-maxage`), or `Always`. See [Caching authorized requests](#caching-authorized-requests) |
 
 ### CoalescerOptions
 
@@ -120,10 +121,46 @@ Both options classes are registered as **named options** (`IOptionsMonitor<T>`) 
 
 | Method | What it registers |
 |---|---|
-| `AddStampedeHttp()` | `CachingMiddleware` + `CoalescingHandler` + metrics |
-| `AddCachingOnly()` | `CachingMiddleware` + metrics |
+| `AddStampedeHttp()` | `CachingMiddleware` + `CoalescingHandler` + metrics + `IStampedeHttpCache` |
+| `AddCachingOnly()` | `CachingMiddleware` + metrics + `IStampedeHttpCache` |
 | `AddCoalescingOnly()` | `CoalescingHandler` + metrics |
 | `UseDistributedCacheStore()` | Replaces `MemoryCacheStore` with `DistributedCacheStore` (chain after the above) |
+
+---
+
+## Programmatic eviction
+
+When a resource changes through a channel this `HttpClient` didn't observe — another service mutated it, a webhook fired, an admin action happened out of band — its cached GET response won't refresh until its own TTL/validator would naturally do so. `IStampedeHttpCache` evicts it on demand, resolved per client name the same way as `ICacheStore`/`ICacheKeyBuilder`:
+
+```csharp
+IStampedeHttpCache cache = serviceProvider.GetRequiredKeyedService<IStampedeHttpCache>("catalog");
+await cache.EvictAsync(new Uri("https://api.example.com/products/42"));
+```
+
+Or via constructor injection when there's a single registered client — the non-keyed `IStampedeHttpCache` falls back to the first-registered client, same as `ICacheStore`.
+
+Eviction targets one exact URI (the same key a GET to it would resolve to) — there's no prefix or pattern eviction, since `IDistributedCache` has no portable way to enumerate keys. It's unconditional and idempotent: evicting a URI with nothing cached is a no-op. If the evicted entry carried a `Vary` header, only the primary marker is removed; the secondary-key variants it pointed to become unreachable and expire on their own rather than being actively swept.
+
+---
+
+## Caching authorized requests
+
+By default, a request carrying an `Authorization` header is never cached — matching every version before 2.4. `CacheOptions.AuthorizationCaching` opts in:
+
+```csharp
+services.AddHttpClient("catalog")
+    .AddStampedeHttp(cache => cache.AuthorizationCaching = AuthorizationCachingMode.WhenPermittedByResponse);
+```
+
+| Mode | Behavior |
+|---|---|
+| `Never` (default) | Authorized requests are never cached |
+| `WhenPermittedByResponse` | Cached only when the response carries `Cache-Control: public`, `must-revalidate`, or `s-maxage` (RFC 9111 §3.5) — recommended, since it's the origin that decides per response |
+| `Always` | Cached under the same rules as any other request, regardless of what the response's `Cache-Control` says — only if you control the origin and know its authenticated responses are safe to reuse |
+
+Stampede.Http is a *private* cache (scoped to one process/`HttpClient`, never shared through a common proxy across principals), so returning a caller's own prior response to that same caller isn't the cross-user leak §3.5 guards against. What still has to hold is that *different* credentials are never mixed: whenever this isn't `Never`, both the cache key and the coalescing key fold in a hash of the `Authorization` value (never the raw value — it never appears in a key, a log line, or a distributed store's key listing), so two callers presenting different — or absent — credentials for the same URL always get independent entries and are never coalesced into one shared origin call. This protection in the coalescer is unconditional, independent of `AuthorizationCaching`: it also applies with `AddCoalescingOnly()`, with no caching in the pipeline at all.
+
+Two known limitations, both a direct consequence of `HEAD` and §4.4 invalidation resolving the plain, unauthenticated key for a URI (they have no credential of their own to scope by): an authenticated `HEAD` request won't hit its own `GET` entry's cache, and a successful `POST`/`PUT`/`DELETE` only invalidates the unauthenticated entry (if any) for that URL, not any per-credential ones — those expire on their own via normal freshness/validator rules, or can be evicted explicitly via [`IStampedeHttpCache`](#programmatic-eviction) if that's not enough.
 
 ---
 
@@ -260,6 +297,10 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## Changelog
+
+### v2.4.0
+- **Programmatic eviction (`IStampedeHttpCache`)** — evict a URI's cached GET response on demand, for when a resource changes through a channel the `HttpClient` didn't observe. Registered per client name like `ICacheStore`/`ICacheKeyBuilder`; see [Programmatic eviction](#programmatic-eviction).
+- **Caching authorized requests (`CacheOptions.AuthorizationCaching`)** — requests carrying an `Authorization` header can now opt into caching (`WhenPermittedByResponse`, honoring RFC 9111 §3.5's `public`/`must-revalidate`/`s-maxage`, or `Always`). Default remains `Never`, matching every prior version exactly. Whenever enabled, both the cache key and the coalescing key fold in a hash of the `Authorization` value — never the raw credential — so different credentials for the same URL are always isolated and never coalesced together; this coalescing-side protection is unconditional and applies even without caching enabled at all. See [Caching authorized requests](#caching-authorized-requests) for the two documented limitations (`HEAD` and unsafe-method invalidation only ever resolve the unauthenticated key).
 
 ### v2.3.0
 - **Client request `Cache-Control` directives** (RFC 9111 §5.2.1) — `max-age` and `min-fresh` can now tighten what counts as a fresh cache hit even when the stored entry itself is still within its server-set freshness lifetime (falling through to conditional revalidation, or a full request, when unmet); `max-stale` (with or without a value) widens acceptance to serve an already-expired entry directly, without contacting the origin, as long as the entry doesn't carry `must-revalidate`/`proxy-revalidate` (§5.2.2.2). Applies to both `GET` and `HEAD`. `max-age`/`min-fresh` are honored even for `Immutable` (RFC 8246) entries — immutability only exempts a response from the *origin's* `no-cache` semantics, not a client's own recency requirement.
