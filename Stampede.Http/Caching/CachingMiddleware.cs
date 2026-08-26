@@ -362,10 +362,118 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             StaleWhileRevalidateSeconds = staleWhileRevalidate,
             MustRevalidate = cc?.MustRevalidate == true || cc?.ProxyRevalidate == true,
             Immutable = IsImmutableEntry(cc),
-            OriginFetchDurationMs = Math.Max(0L, (long)fetchDuration.TotalMilliseconds)
+            OriginFetchDurationMs = Math.Max(0L, (long)fetchDuration.TotalMilliseconds),
+            Tags = CollectTags(request, response)
         };
 
+        await StoreRepresentationAsync(key, entry, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes a representation and, when it carries tags, refreshes its per-tag indexes. Used for both
+    /// initial stores and <c>304</c> refreshes: a refresh extends the entry's retention, so the indexes
+    /// must be re-extended along with it or a repeatedly revalidated entry would outlive them and stop
+    /// being reachable by <see cref="IStampedeHttpCache.EvictByTagAsync"/>.
+    /// </summary>
+    private async ValueTask StoreRepresentationAsync(string key, CacheEntry entry, CancellationToken ct)
+    {
         await WriteEntryAsync(key, entry, ct).ConfigureAwait(false);
+
+        if (entry.Tags.Length > 0)
+        {
+            await UpdateTagIndexesAsync(entry.Tags, key, entry, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Delimiters accepted inside a tag header value: commas (Cloudflare's <c>Cache-Tag</c>) and whitespace (Fastly's <c>Surrogate-Key</c>).</summary>
+    private static readonly char[] _tagDelimiters = [',', ' ', '\t'];
+
+    /// <summary>
+    /// Collects the cache tags for a response being stored: per-request tags from
+    /// <see cref="CacheRequestPolicy.Tags"/> plus tags parsed from the response headers named in
+    /// <see cref="CacheOptions.TagHeaderNames"/>. Deduplicated, ordinal, order-preserving.
+    /// </summary>
+    private string[] CollectTags(HttpRequestMessage request, HttpResponseMessage response)
+    {
+        List<string>? tags = null;
+
+        if (request.Options.TryGetValue(CacheRequestPolicy.Tags, out string[]? requestTags) && requestTags is not null)
+        {
+            foreach (string tag in requestTags)
+            {
+                AddTag(ref tags, tag);
+            }
+        }
+
+        IReadOnlyList<string> headerNames = Options.TagHeaderNames;
+
+        for (int i = 0; i < headerNames.Count; i++)
+        {
+            if (!response.Headers.TryGetValues(headerNames[i], out IEnumerable<string>? values))
+            {
+                continue;
+            }
+
+            foreach (string value in values)
+            {
+                foreach (string tag in value.Split(_tagDelimiters, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    AddTag(ref tags, tag);
+                }
+            }
+        }
+
+        return tags is null ? [] : [.. tags];
+    }
+
+    private static void AddTag(ref List<string>? tags, string tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return;
+        }
+
+        tags ??= [];
+
+        if (!tags.Contains(tag))
+        {
+            tags.Add(tag);
+        }
+    }
+
+    /// <summary>
+    /// Indexes the stored response's primary key under each of its tags, so
+    /// <see cref="IStampedeHttpCache.EvictByTagAsync"/> can later invalidate every tagged entry in one
+    /// call. Each index entry's expiry is pushed out to cover the longest-retained entry it tracks, and
+    /// the merge is best-effort read-merge-write (see <see cref="CacheIndexing"/>).
+    /// </summary>
+    private async ValueTask UpdateTagIndexesAsync(string[] tags, string primaryKey, CacheEntry entry, CancellationToken ct)
+    {
+        // The index must outlive the entries it tracks, including their stale windows and revalidation
+        // grace — the same retention deadline the backing store itself applies to the entry.
+        DateTimeOffset deadline = entry.StoredAt + MemoryCacheStore.ComputeRetention(entry, Options.RevalidationGraceSeconds);
+
+        foreach (string tag in tags)
+        {
+            string tagKey = CacheIndexing.BuildTagKey(tag);
+            CacheEntry? existing = await cache.GetAsync(tagKey, ct).ConfigureAwait(false);
+
+            string[] trackedKeys = CacheIndexing.MergeTrackedKey(existing?.TrackedKeys ?? [], primaryKey);
+            DateTimeOffset expiresAt = existing is not null && existing.ExpiresAt > deadline ? existing.ExpiresAt : deadline;
+
+            CacheEntry index = new()
+            {
+                StatusCode = 0,
+                Body = [],
+                Headers = new Dictionary<string, string[]>(),
+                StoredAt = entry.StoredAt,
+                ExpiresAt = expiresAt,
+                TrackedKeys = trackedKeys
+            };
+
+            await cache.SetAsync(tagKey, index, ct).ConfigureAwait(false);
+            LogTagIndexed(primaryKey, tag);
+        }
     }
 
     /// <summary>
@@ -398,7 +506,15 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         string variantKey = BuildVariantKey(primaryKey, entry.VaryFields, entry.VaryValues);
 
         await cache.SetAsync(variantKey, entry, ct).ConfigureAwait(false);
-        await cache.SetAsync(primaryKey, CreateVaryMarker(entry), ct).ConfigureAwait(false);
+
+        // Track the variant key on the marker so explicit eviction can sweep every variant, not just make
+        // them unreachable. Read-merge-write with no compare-and-swap: best-effort (see CacheIndexing).
+        CacheEntry? existingMarker = await cache.GetAsync(primaryKey, ct).ConfigureAwait(false);
+        string[] trackedKeys = CacheIndexing.MergeTrackedKey(
+            existingMarker is { IsVaryMarker: true } ? existingMarker.TrackedKeys : [],
+            variantKey);
+
+        await cache.SetAsync(primaryKey, CreateVaryMarker(entry) with { TrackedKeys = trackedKeys }, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -750,10 +866,10 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             HttpResponseMessage? notModified = TryCreateNotModified(request, entry);
             if (notModified is not null)
             {
-                return notModified;
+                return WithStatus(notModified, StampedeCacheStatus.Hit);
             }
 
-            return CreateResponse(entry);
+            return WithStatus(CreateResponse(entry), StampedeCacheStatus.Hit);
         }
 
         // RFC 5861 §3 — stale-while-revalidate: serve stale immediately, revalidate in background
@@ -762,7 +878,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             metrics?.RecordStaleWhileRevalidateServed(clientName);
             LogStaleWhileRevalidate(key);
             ScheduleBackgroundRevalidation(key, entry, request);
-            return CreateResponse(entry);
+            return WithStatus(CreateResponse(entry), StampedeCacheStatus.Stale);
         }
 
         // §5.2.1.2 — max-stale: the client accepts an expired entry directly, no origin contact.
@@ -770,7 +886,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             metrics?.RecordCacheHit(clientName: clientName);
             LogMaxStaleServed(key);
-            return CreateResponse(entry);
+            return WithStatus(CreateResponse(entry), StampedeCacheStatus.Stale);
         }
 
         // Stale entry (or no-cache demand, or an unmet request freshness directive) with a validator
@@ -808,7 +924,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             metrics?.RecordStaleErrorServed(clientName);
             LogStaleIfErrorServed(key);
-            return CreateResponse(entry!);
+            return WithStatus(CreateResponse(entry!), StampedeCacheStatus.Stale);
         }
 
         TimeSpan fetchDuration = _timeProvider.GetUtcNow() - fetchStart;
@@ -819,7 +935,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             response.Dispose();
             metrics?.RecordStaleErrorServed(clientName);
             LogStaleIfErrorServed(key);
-            return CreateResponse(entry);
+            return WithStatus(CreateResponse(entry), StampedeCacheStatus.Stale);
         }
 
         bool noStore = request.Options.TryGetValue(CacheRequestPolicy.NoStore, out bool ns) && ns;
@@ -830,6 +946,14 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             await StoreAsync(key, request, response, fetchDuration, ct).ConfigureAwait(false);
         }
 
+        StampedeCacheStatus.MarkMiss(response);
+        return response;
+    }
+
+    /// <summary>Stamps the <c>X-Stampede-Cache</c> status header on a response and returns it, for use in return expressions.</summary>
+    private static HttpResponseMessage WithStatus(HttpResponseMessage response, string status)
+    {
+        StampedeCacheStatus.Set(response, status);
         return response;
     }
 
@@ -876,7 +1000,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             metrics?.RecordCacheHit(HttpMethod.Head, clientName);
             LogCacheHit(getKey);
-            return CreateResponse(entry, includeBody: false);
+            return WithStatus(CreateResponse(entry, includeBody: false), StampedeCacheStatus.Hit);
         }
 
         // §5.2.1.2 — max-stale: the client accepts an expired GET entry directly, no origin contact.
@@ -884,7 +1008,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             metrics?.RecordCacheHit(HttpMethod.Head, clientName);
             LogMaxStaleServed(getKey);
-            return CreateResponse(entry, includeBody: false);
+            return WithStatus(CreateResponse(entry, includeBody: false), StampedeCacheStatus.Stale);
         }
 
         // Stale entry with a validator — conditional HEAD revalidation
@@ -910,16 +1034,19 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             if (revalResponse.StatusCode == HttpStatusCode.NotModified)
             {
                 CacheEntry refreshed = RefreshFromNotModified(entry, revalResponse, headFetchDuration);
-                await WriteEntryAsync(getKey, refreshed, ct).ConfigureAwait(false);
+                await StoreRepresentationAsync(getKey, refreshed, ct).ConfigureAwait(false);
                 metrics?.RecordCacheHit(HttpMethod.Head, clientName);
-                return CreateResponse(refreshed, includeBody: false);
+                return WithStatus(CreateResponse(refreshed, includeBody: false), StampedeCacheStatus.Revalidated);
             }
 
+            StampedeCacheStatus.MarkMiss(revalResponse);
             return revalResponse;
         }
 
         // Miss or stale without validator — forward HEAD to origin
-        return await base.SendAsync(request, ct).ConfigureAwait(false);
+        HttpResponseMessage headResponse = await base.SendAsync(request, ct).ConfigureAwait(false);
+        StampedeCacheStatus.MarkMiss(headResponse);
+        return headResponse;
     }
 
     /// <summary>
@@ -1001,7 +1128,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         catch when (CanServeStaleOnError(entry))
         {
             metrics?.RecordStaleErrorServed(clientName);
-            return CreateResponse(entry);
+            return WithStatus(CreateResponse(entry), StampedeCacheStatus.Stale);
         }
 
         TimeSpan fetchDuration = _timeProvider.GetUtcNow() - fetchStart;
@@ -1011,15 +1138,15 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         {
             response.Dispose();
             metrics?.RecordStaleErrorServed(clientName);
-            return CreateResponse(entry);
+            return WithStatus(CreateResponse(entry), StampedeCacheStatus.Stale);
         }
 
         if (response.StatusCode == HttpStatusCode.NotModified)
         {
             CacheEntry refreshed = RefreshFromNotModified(entry, response, fetchDuration);
-            await WriteEntryAsync(key, refreshed, ct).ConfigureAwait(false);
+            await StoreRepresentationAsync(key, refreshed, ct).ConfigureAwait(false);
             metrics?.RecordCacheHit(clientName: clientName);
-            return CreateResponse(refreshed);
+            return WithStatus(CreateResponse(refreshed), StampedeCacheStatus.Revalidated);
         }
 
         // Per-request NoStore: allow 304 TTL refresh (above) but block storing a new response
@@ -1030,6 +1157,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
             await StoreAsync(key, request, response, fetchDuration, ct).ConfigureAwait(false);
         }
 
+        StampedeCacheStatus.MarkMiss(response);
         return response;
     }
 
@@ -1162,7 +1290,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                 if (response.StatusCode == HttpStatusCode.NotModified)
                 {
                     CacheEntry refreshed = RefreshFromNotModified(entry, response, fetchDuration);
-                    await WriteEntryAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
+                    await StoreRepresentationAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
                 }
                 else if (IsResponseCacheable(response, bgRequest))
                 {
@@ -1261,6 +1389,14 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         foreach (KeyValuePair<string, IEnumerable<string>> header in response.Headers)
         {
+            // Never persist the synthetic cache-status header (e.g. COALESCED stamped by the coalescer):
+            // a stored entry must report its own status when replayed, not the one of the response that
+            // populated it.
+            if (string.Equals(header.Key, StampedeCacheStatus.HeaderName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             headers[header.Key] = [.. header.Value];
         }
 
@@ -1307,4 +1443,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: invalidating {CacheKey} after successful {HttpMethod} request (RFC 9111 §4.4)")]
     private partial void LogCacheInvalidation(string cacheKey, string httpMethod);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Cache: indexed {CacheKey} under tag {Tag}")]
+    private partial void LogTagIndexed(string cacheKey, string tag);
 }

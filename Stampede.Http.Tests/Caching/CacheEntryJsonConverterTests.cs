@@ -41,7 +41,9 @@ public sealed class CacheEntryJsonConverterTests
             StaleWhileRevalidateSeconds = 60,
             MustRevalidate = true,
             IsVaryMarker = true,
-            OriginFetchDurationMs = 245
+            OriginFetchDurationMs = 245,
+            TrackedKeys = ["GET:https://api.test/a", "GET:https://api.test/b"],
+            Tags = ["products", "product-42"]
         };
 
         string json = JsonSerializer.Serialize(original, CacheEntryJsonContext.Default.CacheEntry);
@@ -62,6 +64,8 @@ public sealed class CacheEntryJsonConverterTests
         restored.MustRevalidate.Should().Be(original.MustRevalidate);
         restored.IsVaryMarker.Should().Be(original.IsVaryMarker);
         restored.OriginFetchDurationMs.Should().Be(original.OriginFetchDurationMs);
+        restored.TrackedKeys.Should().Equal(original.TrackedKeys);
+        restored.Tags.Should().Equal(original.Tags);
     }
 
     // ── Optional fields default to null/default when absent ──────────────────

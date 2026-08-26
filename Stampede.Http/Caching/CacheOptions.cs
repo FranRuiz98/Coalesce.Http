@@ -234,6 +234,31 @@ public sealed class CacheOptions
     /// </remarks>
     public bool EnableEarlyRevalidation { get; set; }
 
+    /// <summary>
+    /// Gets or sets the response header names scanned for cache tags — e.g. <c>Cache-Tag</c> (Cloudflare),
+    /// <c>Surrogate-Key</c> (Fastly), <c>xkey</c> (Varnish). Header values are split on commas and
+    /// whitespace, so both delimiter conventions work. Default is empty — no response-header tags are
+    /// collected.
+    /// </summary>
+    /// <remarks>
+    /// Each tag found on a stored response is indexed against that response's cache key, so
+    /// <see cref="IStampedeHttpCache.EvictByTagAsync"/> can later invalidate every tagged entry in one
+    /// call. Tags are compared ordinally (case-sensitive). Independent of this option, per-request tags
+    /// can always be attached via <see cref="CacheRequestPolicy.Tags"/>.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">Thrown when the value is <see langword="null"/>.</exception>
+    public IReadOnlyList<string> TagHeaderNames
+    {
+        get => _tagHeaderNames;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _tagHeaderNames = value;
+        }
+    }
+
+    private IReadOnlyList<string> _tagHeaderNames = [];
+
     private double _earlyRevalidationBeta = 1.0;
 
     /// <summary>

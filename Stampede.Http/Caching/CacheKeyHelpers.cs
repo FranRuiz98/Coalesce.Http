@@ -21,4 +21,16 @@ internal static class CacheKeyHelpers
         using HttpRequestMessage synthetic = new(HttpMethod.Get, uri);
         return keyBuilder.Build(synthetic);
     }
+
+    /// <summary>
+    /// Builds the cache key for a synthetic GET request to <paramref name="uri"/> carrying
+    /// <paramref name="authorization"/> — the credential-scoped key an authenticated GET resolves to when
+    /// <see cref="CacheOptions.AuthorizationCaching"/> is enabled.
+    /// </summary>
+    public static string BuildGetKey(ICacheKeyBuilder keyBuilder, Uri? uri, System.Net.Http.Headers.AuthenticationHeaderValue authorization)
+    {
+        using HttpRequestMessage synthetic = new(HttpMethod.Get, uri);
+        synthetic.Headers.Authorization = authorization;
+        return keyBuilder.Build(synthetic);
+    }
 }
