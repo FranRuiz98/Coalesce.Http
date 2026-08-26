@@ -15,6 +15,8 @@ public sealed class CacheOptions
     private long _defaultStaleWhileRevalidateSeconds;
     private long? _maxCacheSize;
     private long _revalidationGraceSeconds = 300;
+    private double _heuristicFreshnessFraction = 0.1;
+    private TimeSpan _maxHeuristicFreshness = TimeSpan.FromHours(24);
 
     /// <summary>
     /// Gets or sets the default time-to-live (TTL) duration for cache entries.
@@ -142,4 +144,58 @@ public sealed class CacheOptions
     /// Default is <see langword="false"/>.
     /// </remarks>
     public bool NormalizeQueryParameters { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether heuristic freshness (RFC 9111 §4.2.2) is applied to responses that carry
+    /// a <c>Last-Modified</c> header but no explicit freshness signal (<c>s-maxage</c>, <c>max-age</c>,
+    /// or <c>Expires</c>).
+    /// </summary>
+    /// <remarks>
+    /// When enabled, the freshness lifetime is estimated as
+    /// <see cref="HeuristicFreshnessFraction"/> of the time elapsed between <c>Last-Modified</c> and
+    /// the response's <c>Date</c> (or the moment it was received, when <c>Date</c> is absent) — the
+    /// classic "10% of age" heuristic recommended by §4.2.2 — capped at
+    /// <see cref="MaxHeuristicFreshness"/>. When disabled (the default), responses without an explicit
+    /// freshness signal fall straight through to <see cref="DefaultTtl"/>, matching pre-2.3 behavior.
+    /// </remarks>
+    public bool EnableHeuristicFreshness { get; set; }
+
+    /// <summary>
+    /// Gets or sets the fraction of a response's <c>Last-Modified</c> age used as its heuristic
+    /// freshness lifetime, when <see cref="EnableHeuristicFreshness"/> is <see langword="true"/>.
+    /// Default is <c>0.1</c> (10%), the value suggested by RFC 9111 §4.2.2.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is not positive.</exception>
+    public double HeuristicFreshnessFraction
+    {
+        get => _heuristicFreshnessFraction;
+        set
+        {
+            if (value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "HeuristicFreshnessFraction must be positive.");
+            }
+
+            _heuristicFreshnessFraction = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the upper bound on the freshness lifetime computed by
+    /// <see cref="EnableHeuristicFreshness"/>. Default is 24 hours, matching common browser heuristics.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is less than or equal to <see cref="TimeSpan.Zero"/>.</exception>
+    public TimeSpan MaxHeuristicFreshness
+    {
+        get => _maxHeuristicFreshness;
+        set
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "MaxHeuristicFreshness must be positive.");
+            }
+
+            _maxHeuristicFreshness = value;
+        }
+    }
 }
