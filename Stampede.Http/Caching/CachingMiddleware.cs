@@ -1112,11 +1112,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// Builds the cache key that would be used for a GET request to the given URI.
     /// Used to invalidate the cached GET entry when an unsafe method succeeds (§4.4).
     /// </summary>
-    private string BuildGetKey(Uri? uri)
-    {
-        using HttpRequestMessage synthetic = new(HttpMethod.Get, uri);
-        return keyBuilder.Build(synthetic);
-    }
+    private string BuildGetKey(Uri? uri) => CacheKeyHelpers.BuildGetKey(keyBuilder, uri);
 
     /// <summary>
     /// Invalidates cached entries affected by a successful unsafe method response (RFC 9111 §4.4).
