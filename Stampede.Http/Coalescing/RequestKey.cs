@@ -1,4 +1,5 @@
-﻿using System.Buffers;
+﻿using Stampede.Http.Internal;
+using System.Buffers;
 
 namespace Stampede.Http.Coalescing;
 
@@ -41,17 +42,29 @@ internal readonly record struct RequestKey(string Method, string Url, string Hea
     {
         bool hasKeyHeaders = keyHeaders is not null && keyHeaders.Count > 0;
         bool hasConditional = HasConditionalHeaders(request);
+        string? authHash = CredentialHash.OfAuthorization(request.Headers.Authorization);
 
-        if (!hasKeyHeaders && !hasConditional)
+        if (!hasKeyHeaders && !hasConditional && authHash is null)
         {
             return Create(request);
         }
 
         IReadOnlyList<string> effectiveHeaders = hasConditional
             ? MergeConditionalHeaders(keyHeaders, request)
-            : keyHeaders!;
+            : keyHeaders ?? [];
 
         string headersKey = BuildHeadersKey(request, effectiveHeaders);
+
+        // Authorization is always folded in as a hash — independent of CacheOptions.AuthorizationCaching,
+        // which governs the caching layer, not this one. Two callers presenting different (or no)
+        // credentials for the same URL must never be coalesced into a single shared origin response, even
+        // when caching itself is off (AddCoalescingOnly) or set to never cache authorized responses. The
+        // hash, not the raw value, keeps this out of the debug logs that key.ToString() feeds.
+        if (authHash is not null)
+        {
+            headersKey = string.Concat(headersKey, "auth=", authHash, ";");
+        }
+
         return new RequestKey(request.Method.Method, request.RequestUri!.AbsoluteUri, headersKey);
     }
 

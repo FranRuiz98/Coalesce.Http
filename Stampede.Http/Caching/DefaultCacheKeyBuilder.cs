@@ -1,4 +1,6 @@
-﻿namespace Stampede.Http.Caching;
+﻿using Stampede.Http.Internal;
+
+namespace Stampede.Http.Caching;
 
 /// <summary>
 /// Default <see cref="ICacheKeyBuilder"/> implementation that produces keys in the form <c>METHOD:absoluteUri</c>.
@@ -7,6 +9,12 @@
 /// When <paramref name="normalizeQueryParameters"/> is <see langword="true"/>, query parameters are sorted
 /// alphabetically before the key is built so that <c>?a=1&amp;b=2</c> and <c>?b=2&amp;a=1</c> map to the
 /// same cache entry.
+/// <para>
+/// When the request carries an <c>Authorization</c> header — which only reaches <see cref="Build"/> at all
+/// when <see cref="AuthorizationCachingMode"/> is not <c>Never</c> — a hash of its value is folded into the
+/// key (see <see cref="CredentialHash"/>), never the raw value, so two callers presenting different
+/// credentials for the same URL always get independent cache entries.
+/// </para>
 /// </remarks>
 public sealed class DefaultCacheKeyBuilder(bool normalizeQueryParameters = false) : ICacheKeyBuilder
 {
@@ -18,12 +26,22 @@ public sealed class DefaultCacheKeyBuilder(bool normalizeQueryParameters = false
             ? NormalizeUri(request.RequestUri)
             : (request.RequestUri?.AbsoluteUri ?? string.Empty);
 
-        return string.Create(method.Length + 1 + uri.Length, (method, uri), static (span, state) =>
+        string key = string.Create(method.Length + 1 + uri.Length, (method, uri), static (span, state) =>
         {
             state.method.AsSpan().CopyTo(span);
             span[state.method.Length] = ':';
             state.uri.AsSpan().CopyTo(span[(state.method.Length + 1)..]);
         });
+
+        string? authHash = CredentialHash.OfAuthorization(request.Headers.Authorization);
+        if (authHash is null)
+        {
+            return key;
+        }
+
+        // U+001F (unit separator) is a control character that cannot appear in a URI, so the credential
+        // fingerprint can never collide with real key content.
+        return string.Concat(key, "auth=", authHash);
     }
 
     /// <summary>

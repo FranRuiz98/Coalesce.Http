@@ -198,4 +198,15 @@ public sealed class CacheOptions
             _maxHeuristicFreshness = value;
         }
     }
+
+    /// <summary>
+    /// Gets or sets whether requests carrying an <c>Authorization</c> header are eligible for caching.
+    /// Default is <see cref="AuthorizationCachingMode.Never"/> — matches pre-2.4 behavior.
+    /// </summary>
+    /// <remarks>
+    /// See <see cref="AuthorizationCachingMode"/> for the safety model: whenever this is not
+    /// <see cref="AuthorizationCachingMode.Never"/>, the cache key and the coalescing key both fold in a
+    /// hash of the <c>Authorization</c> value so different credentials are never mixed.
+    /// </remarks>
+    public AuthorizationCachingMode AuthorizationCaching { get; set; } = AuthorizationCachingMode.Never;
 }

@@ -38,19 +38,24 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// <summary>
     /// Determines whether the specified HTTP request is eligible for caching based on its method, headers, and content.
     /// </summary>
-    /// <remarks>A request is considered cacheable if it uses the GET method, does not include authorization
-    /// headers or content, and does not specify 'no-store' in its Cache-Control header. This method is useful for
-    /// deciding whether a response to the request should be stored or reused.</remarks>
+    /// <remarks>
+    /// A request is considered cacheable if it uses the GET method, does not include content, and does not
+    /// specify <c>no-store</c> in its Cache-Control header. A request carrying an <c>Authorization</c> header
+    /// is additionally gated on <see cref="CacheOptions.AuthorizationCaching"/> (default
+    /// <see cref="AuthorizationCachingMode.Never"/> — excluded, matching pre-2.4 behavior). See
+    /// <see cref="AuthorizationCachingMode"/> for the credential-isolation guarantees that apply once this
+    /// is enabled.
+    /// </remarks>
     /// <param name="request">The HTTP request message to evaluate for cacheability. Must not be null.</param>
     /// <returns>true if the request can be cached; otherwise, false.</returns>
-    private static bool IsRequestCacheable(HttpRequestMessage request)
+    private bool IsRequestCacheable(HttpRequestMessage request)
     {
         if (request.Method != HttpMethod.Get)
         {
             return false;
         }
 
-        if (request.Headers.Authorization is not null)
+        if (request.Headers.Authorization is not null && Options.AuthorizationCaching == AuthorizationCachingMode.Never)
         {
             return false;
         }
@@ -161,8 +166,13 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
     /// </list>
     /// </remarks>
     /// <param name="response">The HTTP response message to evaluate for cacheability. Must not be null.</param>
+    /// <param name="request">
+    /// The request that produced <paramref name="response"/>. Only consulted for its <c>Authorization</c>
+    /// header, to apply the RFC 9111 §3.5 permission check when
+    /// <see cref="CacheOptions.AuthorizationCaching"/> is <see cref="AuthorizationCachingMode.WhenPermittedByResponse"/>.
+    /// </param>
     /// <returns>true if the response is cacheable; otherwise, false.</returns>
-    private static bool IsResponseCacheable(HttpResponseMessage response)
+    private bool IsResponseCacheable(HttpResponseMessage response, HttpRequestMessage request)
     {
         CacheControlHeaderValue? cacheControl = response.Headers.CacheControl;
 
@@ -174,6 +184,19 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         // §5.2.2.7 — private: must not store in a shared cache
         if (cacheControl?.Private == true)
+        {
+            return false;
+        }
+
+        // §3.5 — a request carrying Authorization may only be cached when the response explicitly permits
+        // it: public, must-revalidate, or an explicit shared-cache freshness directive (s-maxage). Only
+        // enforced in WhenPermittedByResponse; Always skips this and Never never reaches here at all
+        // (IsRequestCacheable already excluded the request from the pipeline).
+        if (request.Headers.Authorization is not null
+            && Options.AuthorizationCaching == AuthorizationCachingMode.WhenPermittedByResponse
+            && cacheControl?.Public != true
+            && cacheControl?.MustRevalidate != true
+            && cacheControl?.SharedMaxAge is null)
         {
             return false;
         }
@@ -774,7 +797,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
 
         bool noStore = request.Options.TryGetValue(CacheRequestPolicy.NoStore, out bool ns) && ns;
 
-        if (!noStore && IsResponseCacheable(response))
+        if (!noStore && IsResponseCacheable(response, request))
         {
             LogCacheStore(key);
             await StoreAsync(key, request, response, ct).ConfigureAwait(false);
@@ -970,7 +993,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
         // Per-request NoStore: allow 304 TTL refresh (above) but block storing a new response
         bool noStore = request.Options.TryGetValue(CacheRequestPolicy.NoStore, out bool ns) && ns;
 
-        if (!noStore && IsResponseCacheable(response))
+        if (!noStore && IsResponseCacheable(response, request))
         {
             await StoreAsync(key, request, response, ct).ConfigureAwait(false);
         }
@@ -1071,7 +1094,7 @@ internal sealed partial class CachingMiddleware(ICacheStore cache,
                     CacheEntry refreshed = RefreshFromNotModified(entry, response);
                     await WriteEntryAsync(key, refreshed, CancellationToken.None).ConfigureAwait(false);
                 }
-                else if (IsResponseCacheable(response))
+                else if (IsResponseCacheable(response, bgRequest))
                 {
                     await StoreAsync(key, bgRequest, response, CancellationToken.None).ConfigureAwait(false);
                 }
