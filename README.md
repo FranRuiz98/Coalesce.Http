@@ -103,6 +103,8 @@ Stampede.Http occupies a specific niche: **origin-controlled caching semantics i
 | `HeuristicFreshnessFraction` | `0.1` | Fraction of the `Last-Modified` age used as the heuristic TTL, when enabled |
 | `MaxHeuristicFreshness` | `24h` | Upper bound on the heuristic TTL, when enabled |
 | `AuthorizationCaching` | `Never` | Whether requests carrying an `Authorization` header are cacheable — `Never`, `WhenPermittedByResponse` (RFC 9111 §3.5: requires `public`/`must-revalidate`/`s-maxage`), or `Always`. See [Caching authorized requests](#caching-authorized-requests) |
+| `EnableEarlyRevalidation` | `false` | XFetch: probabilistically refresh a fresh entry in the background ahead of its expiry. See [Early revalidation (XFetch)](#early-revalidation-xfetch) |
+| `EarlyRevalidationBeta` | `1.0` | Tuning parameter (β) scaling how far ahead of expiry early revalidation starts, in units of the entry's measured origin fetch duration |
 
 ### CoalescerOptions
 
@@ -112,6 +114,8 @@ Stampede.Http occupies a specific niche: **origin-controlled caching semantics i
 | `CoalescingTimeout` | `null` | How long a waiter will wait before falling back to an independent request. `null` = no timeout |
 | `MaxResponseBodyBytes` | `1 MB` | Maximum body the coalescer will buffer; exceeding this throws for all waiters |
 | `CoalesceKeyHeaders` | `[]` | Extra request headers (e.g. `X-Tenant-Id`) included in the coalescing key |
+| `ShouldCoalesce` | `null` | Predicate extending coalescing to methods other than `GET`/`HEAD`. See [Coalescing non-GET requests](#coalescing-non-get-requests) |
+| `MaxCoalescedRequestBodyBytes` | `64 KB` | Maximum request body buffered to hash for `ShouldCoalesce`-matched methods; larger bodies execute independently |
 
 Both options classes are registered as **named options** (`IOptionsMonitor<T>`) keyed by the client name, so runtime-tuneable settings take effect immediately on configuration reload without restarting the app.
 
@@ -161,6 +165,39 @@ services.AddHttpClient("catalog")
 Stampede.Http is a *private* cache (scoped to one process/`HttpClient`, never shared through a common proxy across principals), so returning a caller's own prior response to that same caller isn't the cross-user leak §3.5 guards against. What still has to hold is that *different* credentials are never mixed: whenever this isn't `Never`, both the cache key and the coalescing key fold in a hash of the `Authorization` value (never the raw value — it never appears in a key, a log line, or a distributed store's key listing), so two callers presenting different — or absent — credentials for the same URL always get independent entries and are never coalesced into one shared origin call. This protection in the coalescer is unconditional, independent of `AuthorizationCaching`: it also applies with `AddCoalescingOnly()`, with no caching in the pipeline at all.
 
 Two known limitations, both a direct consequence of `HEAD` and §4.4 invalidation resolving the plain, unauthenticated key for a URI (they have no credential of their own to scope by): an authenticated `HEAD` request won't hit its own `GET` entry's cache, and a successful `POST`/`PUT`/`DELETE` only invalidates the unauthenticated entry (if any) for that URL, not any per-credential ones — those expire on their own via normal freshness/validator rules, or can be evicted explicitly via [`IStampedeHttpCache`](#programmatic-eviction) if that's not enough.
+
+---
+
+## Coalescing non-GET requests
+
+Coalescing covers `GET`/`HEAD` unconditionally. `CoalescerOptions.ShouldCoalesce` extends it to other methods — typically `POST` exposed as a read (a GraphQL `query`, a search endpoint with a large filter body):
+
+```csharp
+services.AddHttpClient("graphql")
+    .AddStampedeHttp(configureCoalescing: o =>
+    {
+        o.ShouldCoalesce = req => req.Method == HttpMethod.Post
+            && req.Headers.TryGetValues("X-Operation-Type", out var v)
+            && v.Contains("query");
+    });
+```
+
+**This asserts the request is idempotent.** Coalescing means concurrent identical calls share a single execution — fine for a read, actively wrong for a mutation: two concurrent orders would collapse into one order actually placed. Only opt a method in when every request it matches is a read; a GraphQL gateway, for instance, must match `query` operations but never `mutation` ones, typically via a header the caller adds when building the request (as above) — the predicate runs before the body is read, so it can inspect the method, URI, and headers, but not `Content`.
+
+For a matched method, two requests to the same URL coalesce only if their bodies are identical too — the body is hashed into the coalescing key. Hashing requires buffering it (`MaxCoalescedRequestBodyBytes`, default 64 KB); a larger body isn't an error, it just executes independently rather than coalescing. Buffering also makes the body replayable, so retry/hedging added via `AddResilienceHandler` works the same way it already does for the coalesced response.
+
+---
+
+## Early revalidation (XFetch)
+
+`stale-while-revalidate` reacts once an entry has *already* gone stale. `CacheOptions.EnableEarlyRevalidation` (XFetch — Vattani, Padmanabhan & Gionis, "Optimal Probabilistic Cache Stampede Prevention", 2015) targets what happens *before* that: it spreads out *when* different callers or process instances refresh a not-yet-expired entry, so they don't all decide to refetch it in the same instant it expires.
+
+```csharp
+services.AddHttpClient("catalog")
+    .AddStampedeHttp(cache => cache.EnableEarlyRevalidation = true);
+```
+
+On a fresh hit, the probability of triggering a background refresh rises the closer the entry is to expiring, scaled by how expensive it was to fetch: an entry that took 2s to compute starts refreshing early well before one that answered in 20ms, via `EarlyRevalidationBeta` — the expected lead time before expiry is `origin fetch duration × β`. Higher values refresh earlier and more often, at the cost of more background origin calls; the default `1.0` matches the value used in the paper's evaluation. The refresh runs through the same background coordinator as `stale-while-revalidate`, so at most one runs per key at a time regardless of how many concurrent hits trigger it — and the hit that triggered it is otherwise unaffected, still served immediately from the current entry.
 
 ---
 
@@ -297,6 +334,10 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## Changelog
+
+### v2.5.0
+- **Coalescing non-GET requests (`CoalescerOptions.ShouldCoalesce`)** — opt specific `POST` (or other non-`GET`/`HEAD`) requests into coalescing, keyed on method + URL + a hash of the request body so two different bodies to the same URL are never merged. Buffering the body to hash it also makes it replayable for retry/hedging layers. Default remains unset — no method beyond `GET`/`HEAD` is ever coalesced unless explicitly matched. See [Coalescing non-GET requests](#coalescing-non-get-requests).
+- **Early revalidation (`CacheOptions.EnableEarlyRevalidation`)** — XFetch probabilistic early expiration: a fresh cache hit can trigger a background refresh ahead of its expiry, with the trigger probability scaled by how expensive the entry was to fetch (`CacheEntry.OriginFetchDurationMs`, newly tracked on every origin call) and `EarlyRevalidationBeta`. Spreads out — rather than synchronizes — when concurrent callers/instances refetch a resource near its expiry. Default remains `false`; enabling it changes no other behavior. See [Early revalidation (XFetch)](#early-revalidation-xfetch).
 
 ### v2.4.0
 - **Programmatic eviction (`IStampedeHttpCache`)** — evict a URI's cached GET response on demand, for when a resource changes through a channel the `HttpClient` didn't observe. Registered per client name like `ICacheStore`/`ICacheKeyBuilder`; see [Programmatic eviction](#programmatic-eviction).
